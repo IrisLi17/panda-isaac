@@ -32,21 +32,21 @@ class TestConfig(BaseConfig):
 class TestJointConfig(BaseConfig):
     class env(BaseConfig.env):
         seed = 42
-        num_envs = 16
-        # num_observations = 7 + 27
-        num_observations = 3 * 224 * 224 + 27
+        num_envs = 1
+        num_observations = 7 + 27
+        # num_observations = 3 * 224 * 224 + 27
         num_actions = 8
         max_episode_length = 50
     
     class obs(BaseConfig.obs):
-        # type = "state"
-        type = "pixel"
+        type = "state"
+        # type = "pixel"
         im_size = 224
     
     class control(BaseConfig.control):
         decimal = 6
         controller = "joint"
-        common_speed = 2.17 * decimal
+        # common_speed = 2.17 * decimal
     
     class reward(BaseConfig.reward):
         type = "sparse"
@@ -75,9 +75,9 @@ for i in range(100):
         pass
         # print(obs[0])
     obs, reward, done, info = env.step(action)
-    print(reward[0])
+    # print(reward[0])
     if done[0]:
-        print("reset", obs[0][7:])
+        print("reset", obs[0])
 env.close()
 
 '''

@@ -61,16 +61,26 @@ class PandaPushEnv(BaseTask):
         # use position drive for all dofs
         controller = self.cfg.control.controller
         assert controller == "joint"
-        franka_dof_props["driveMode"][:7].fill(gymapi.DOF_MODE_POS)
-        franka_dof_props["stiffness"][:7].fill(400.0)
-        franka_dof_props["damping"][:7].fill(80.0)
+        # franka_dof_props["driveMode"][:7].fill(gymapi.DOF_MODE_POS)
+        # franka_dof_props["stiffness"][:7].fill(400.0)
+        # franka_dof_props["damping"][:7].fill(80.0)
+        franka_dof_props["driveMode"][:7].fill(gymapi.DOF_MODE_EFFORT)
+        franka_dof_props["stiffness"][:7].fill(0.0)
+        franka_dof_props["stiffness"][:7].fill(0.0)
         # grippers
         franka_dof_props["driveMode"][7:].fill(gymapi.DOF_MODE_POS)
         franka_dof_props["stiffness"][7:].fill(1.0e6)
         franka_dof_props["damping"][7:].fill(1.0e2)
         franka_dof_props["effort"][7:] = 200
         
-        self.franka_dof_speed_scales = torch.ones_like(self.franka_lower_limits)
+        self.franka_dof_stiffness = to_torch([400.0] * 7 + [1.0e6] * 2)
+        self.franka_dof_damping = to_torch([80.0] * 7 + [1.0e2] * 2)
+        # new2
+        # self.franka_dof_stiffness = to_torch([600.0] * 4 + [250.0, 150.0, 50.0] + [1.0e6] * 2)
+        # self.franka_dof_damping = to_torch([50.0] * 3 + [20.0] * 3 + [10.0] + [1.0e2] * 2)
+        self.franka_dof_effort = to_torch(franka_dof_props["effort"])
+        
+        self.franka_dof_speed_scales = to_torch(franka_dof_props["velocity"])
         self.franka_dof_speed_scales[7:] = 0.1
 
 
@@ -225,6 +235,7 @@ class PandaPushEnv(BaseTask):
 
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.last_torques = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         
         # prepare buffers for goal
         self.box_goals = torch.zeros_like(self.rb_states[self.box_idxs, :3], requires_grad=False)
@@ -248,6 +259,7 @@ class PandaPushEnv(BaseTask):
         for k in self.episode_sums:
             self.episode_sums[k][env_ids] = 0
         self.reset_buf[env_ids] = 1
+        self.last_torques[env_ids] = 0
         # step the physics
         self.gym.simulate(self.sim)
         self.gym.fetch_results(self.sim, True)
@@ -256,16 +268,21 @@ class PandaPushEnv(BaseTask):
         self.gym.refresh_mass_matrix_tensors(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
+        # print("achieved", self.dof_pos[0, :, 0])
     
     def _reset_dofs(self, env_ids):
         # Important! should feed actor id, not env id
         actor_ids_int32 = self.actor_ids_int32[env_ids, self.franka_handle].flatten()
         dof_pos_noise = torch.rand((len(env_ids), self.franka_num_dofs), device=self.device)
         dof_pos = tensor_clamp(
+            # new3 0.5, new4 revert
             self.default_dof_pos_tensor.unsqueeze(0) + 0.25 * (dof_pos_noise - 0.5),
             self.franka_lower_limits, self.franka_upper_limits
         )
+        # new4
+        # dof_pos[:, 7:9] = 0.0
         self.dof_pos[env_ids, :, 0] = dof_pos
+        # print("desired", self.dof_pos[0, :, 0])
         
         self.dof_vel[env_ids, :, 0] = 0
         self.gym.set_dof_state_tensor_indexed(self.sim,
@@ -274,6 +291,9 @@ class PandaPushEnv(BaseTask):
         self.motor_pos_target[env_ids, :] = dof_pos
         self.gym.set_dof_position_target_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.motor_pos_target), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
+        # torques = torch.zeros_like(self.last_torques)
+        # self.gym.set_dof_actuation_force_tensor_indexed(
+        #     self.sim, gymtorch.unwrap_tensor(torques), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
         
     def _reset_root_states(self, env_ids):
         # Randomize box position
@@ -295,19 +315,31 @@ class PandaPushEnv(BaseTask):
         actions = torch.cat([actions, actions[:, -1:]], dim=-1)
         assert actions.shape[-1] == self.franka_num_dofs
         actions = torch.clamp(actions, -1.0, 1.0)
-        joint_target = self.motor_pos_target + self.franka_dof_speed_scales * self.sim_params.dt * actions * self.cfg.control.common_speed
+        # new4 revert
+        joint_target = self.motor_pos_target + self.franka_dof_speed_scales * self.sim_params.dt * actions * self.cfg.control.decimal
+        # new3
+        # joint_target = self.dof_pos.squeeze(dim=-1) + self.franka_dof_speed_scales * self.sim_params.dt * actions * self.cfg.control.decimal
         self.motor_pos_target[:, :] = tensor_clamp(joint_target, self.franka_lower_limits, self.franka_upper_limits)
-        self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(self.motor_pos_target))
+
         for i in range(self.cfg.control.decimal):
+            cal_torques = self.franka_dof_stiffness * (self.motor_pos_target - self.dof_pos[:, :, 0]) + self.franka_dof_damping * (-self.dof_vel[:, :, 0])
+            diff = cal_torques - self.last_torques
+            torques = self.last_torques + torch.clamp(diff, -1000 * self.sim_params.dt, 1000 * self.sim_params.dt)
+            torques = tensor_clamp(torques, -self.franka_dof_effort, self.franka_dof_effort)
+            # print(i, torques[0])
+            self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(torques))
+            self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(self.motor_pos_target))
+            self.last_torques[:] = torques
             self.render()
             # step the physics
             self.gym.simulate(self.sim)
-            self.gym.fetch_results(self.sim, True)
+            if self.device == 'cpu':
+                self.gym.fetch_results(self.sim, True)
+            self.gym.refresh_dof_state_tensor(self.sim)
         # refresh tensors
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self.gym.refresh_dof_state_tensor(self.sim)
-
+        # print(self.motor_pos_target[0] - self.dof_pos[0, :, 0])
         if self.cfg.obs.type == "pixel" or self.viewer is not None:
             self.gym.step_graphics(self.sim)
         # update viewer
@@ -353,7 +385,7 @@ class PandaPushEnv(BaseTask):
         if self.cfg.reward.type == "sparse":
             rew = (distance < self.box_size).float() - 0.1 * (~is_downward).float()
         elif self.cfg.reward.type == "dense":
-            rew = 0.1 * (-distance)
+            rew = 0.1 * (-distance - (~is_downward).float()) + (distance < self.box_size).float()
         else:
             raise NotImplementedError
         self.rew_buf = rew
