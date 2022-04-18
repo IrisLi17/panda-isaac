@@ -188,7 +188,6 @@ class PandaPushEnv(BaseTask):
             self.rfinger_idxs.append(rfinger_idx)
 
             if self.cfg.obs.type == "pixel":
-                # add camera on wrist
                 cam_props = gymapi.CameraProperties()
                 cam_props.width = self.cfg.cam.w
                 cam_props.height = self.cfg.cam.h
@@ -197,15 +196,26 @@ class PandaPushEnv(BaseTask):
                 cam_props.supersampling_vertical = self.cfg.cam.ss
                 cam_props.enable_tensors = True
                 cam_handle = self.gym.create_camera_sensor(env, cam_props)
-                rigid_body_hand_ind = self.gym.find_actor_rigid_body_handle(env, franka_handle, "panda_hand")
-                local_t = gymapi.Transform()
-                local_t.p = gymapi.Vec3(*self.cfg.cam.loc_p)
-                xyz_angle_rad = [np.radians(a) for a in self.cfg.cam.loc_r]
-                local_t.r = gymapi.Quat.from_euler_zyx(*xyz_angle_rad)
-                self.gym.attach_camera_to_body(
-                    cam_handle, env, rigid_body_hand_ind,
-                    local_t, gymapi.FOLLOW_TRANSFORM
-                )
+                if self.cfg.cam.view == "ego":
+                    # add camera on wrist
+                    rigid_body_hand_ind = self.gym.find_actor_rigid_body_handle(env, franka_handle, "panda_hand")
+                    local_t = gymapi.Transform()
+                    local_t.p = gymapi.Vec3(*self.cfg.cam.loc_p)
+                    xyz_angle_rad = [np.radians(a) for a in self.cfg.cam.loc_r]
+                    local_t.r = gymapi.Quat.from_euler_zyx(*xyz_angle_rad)
+                    self.gym.attach_camera_to_body(
+                        cam_handle, env, rigid_body_hand_ind,
+                        local_t, gymapi.FOLLOW_TRANSFORM
+                    )
+                elif self.cfg.cam.view == "third":
+                    # add third-person view camera
+                    self.gym.set_camera_location(
+                        cam_handle, env, 
+                        gymapi.Vec3(0.8, 0.0, 0.8), 
+                        gymapi.Vec3(0.3, 0.0, 0.5),
+                    )
+                else:
+                    raise NotImplementedError
                 self.cams.append(cam_handle)
                 # Camera tensor
                 cam_tensor = self.gym.get_camera_image_gpu_tensor(self.sim, env, cam_handle, gymapi.IMAGE_COLOR)
@@ -423,7 +433,7 @@ class PandaPushEnv(BaseTask):
             )
             lfinger2obj = torch.clamp(torch.norm(box_pos - lfinger_grasp_pos, dim=-1), min=0.025)
             rfinger2obj = torch.clamp(torch.norm(box_pos - rfinger_grasp_pos, dim=-1), min=0.025)
-            rew = 0.01 * 1 / lfinger2obj + 0.01 * (1 / rfinger2obj) + 0.1 * (1 / (0.04 + distance) - 4)+ 0.0 * (distance < self.box_size).float()
+            rew = 0.1 * (-(~is_downward).float() - (lfinger2obj - 0.025) - (rfinger2obj - 0.025)) + (distance < self.box_size).float()
         else:
             raise NotImplementedError
         self.rew_buf = rew

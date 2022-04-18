@@ -10,11 +10,12 @@ class BaseConfig(object):
         max_episode_length: int
     
     class cam:
+        view = "ego"
         crop = "center"
         w = 298
         h = 224
-        # fov = 120
-        fov = 86
+        fov = 120
+        # fov = 86
         ss = 2
         loc_p = [0.04, 0.0, 0.045]
         loc_r = [180, -90.0, 0.0]
