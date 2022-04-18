@@ -2,7 +2,7 @@ import math
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymtorch
-from isaacgym.torch_utils import to_torch, tensor_clamp, quat_apply
+from isaacgym.torch_utils import to_torch, tensor_clamp, quat_apply, tf_combine
 from panda_isaac.base_config import BaseConfig
 from panda_isaac.base_task import BaseTask
 import torch
@@ -80,7 +80,7 @@ class PandaPushEnv(BaseTask):
         # self.franka_dof_damping = to_torch([50.0] * 3 + [20.0] * 3 + [10.0] + [1.0e2] * 2)
         self.franka_dof_effort = to_torch(franka_dof_props["effort"])
         
-        self.franka_dof_speed_scales = to_torch(franka_dof_props["velocity"])
+        self.franka_dof_speed_scales = 1.0 * to_torch(franka_dof_props["velocity"])
         self.franka_dof_speed_scales[7:] = 0.1
 
 
@@ -123,6 +123,7 @@ class PandaPushEnv(BaseTask):
         self.envs = []
         self.box_idxs = []
         self.hand_idxs = []
+        self.lfinger_idxs, self.rfinger_idxs = [], []
         init_pos_list = []
         init_rot_list = []
         self.cams = []
@@ -181,6 +182,11 @@ class PandaPushEnv(BaseTask):
             hand_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_hand", gymapi.DOMAIN_SIM)
             self.hand_idxs.append(hand_idx)
 
+            lfinger_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_leftfinger", gymapi.DOMAIN_SIM)
+            rfinger_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_rightfinger", gymapi.DOMAIN_SIM)
+            self.lfinger_idxs.append(lfinger_idx)
+            self.rfinger_idxs.append(rfinger_idx)
+
             if self.cfg.obs.type == "pixel":
                 # add camera on wrist
                 cam_props = gymapi.CameraProperties()
@@ -233,6 +239,11 @@ class PandaPushEnv(BaseTask):
         self.init_hand_vector = torch.tensor([[0., 0., 1.]], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.downward_vector = torch.tensor([[0., 0., -1.0]], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
+        self.local_grasp_pos = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
+        self.local_grasp_pos[:, 2] = 0.045
+        self.local_grasp_rot = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device)
+        self.local_grasp_rot[:, 3] = 1
+
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         self.last_torques = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
@@ -268,19 +279,28 @@ class PandaPushEnv(BaseTask):
         self.gym.refresh_mass_matrix_tensors(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
-        # print("achieved", self.dof_pos[0, :, 0])
+        # print("achieved", self.rb_states[self.hand_idxs, :3], self.dof_pos[0, :, 0])
+        # assert abs(self.rb_states[self.box_idxs[env_ids[0]], 2] - 0.425) < 1e-4, self.rb_states[self.box_idxs[env_ids[0]]]
     
     def _reset_dofs(self, env_ids):
         # Important! should feed actor id, not env id
         actor_ids_int32 = self.actor_ids_int32[env_ids, self.franka_handle].flatten()
         dof_pos_noise = torch.rand((len(env_ids), self.franka_num_dofs), device=self.device)
-        dof_pos = tensor_clamp(
-            # new3 0.5, new4 revert
-            self.default_dof_pos_tensor.unsqueeze(0) + 0.25 * (dof_pos_noise - 0.5),
-            self.franka_lower_limits, self.franka_upper_limits
-        )
+        if False:
+            dof_pos = tensor_clamp(
+                # new3 0.5, new4 revert
+                # self.default_dof_pos_tensor.unsqueeze(0) + 0.25 * (dof_pos_noise - 0.5),
+                self.dof_pos[env_ids, :, 0] + 0.25 * (dof_pos_noise - 0.5),
+                self.franka_lower_limits, self.franka_upper_limits
+            )
+        else:
+            dof_pos = tensor_clamp(
+                # new3 0.5, new4 revert
+                self.default_dof_pos_tensor.unsqueeze(0) + 0.25 * (dof_pos_noise - 0.5),
+                self.franka_lower_limits, self.franka_upper_limits
+            )
         # new4
-        # dof_pos[:, 7:9] = 0.0
+        # dof_pos[:, 8] = dof_pos[:, 7]
         self.dof_pos[env_ids, :, 0] = dof_pos
         # print("desired", self.dof_pos[0, :, 0])
         
@@ -312,6 +332,9 @@ class PandaPushEnv(BaseTask):
         self.box_goals[env_ids, 2] = self.table_dims[2] + self.box_size / 2
     
     def step(self, actions):
+        # actions = torch.clone(actions)
+        # force closed finger
+        # actions[:, -1] = -1.0
         actions = torch.cat([actions, actions[:, -1:]], dim=-1)
         assert actions.shape[-1] == self.franka_num_dofs
         actions = torch.clamp(actions, -1.0, 1.0)
@@ -385,7 +408,21 @@ class PandaPushEnv(BaseTask):
         if self.cfg.reward.type == "sparse":
             rew = (distance < self.box_size).float() - 0.1 * (~is_downward).float()
         elif self.cfg.reward.type == "dense":
-            rew = 0.1 * (-distance - (~is_downward).float()) + (distance < self.box_size).float()
+            lfinger_pos = self.rb_states[self.lfinger_idxs, :3]
+            lfinger_rot = self.rb_states[self.lfinger_idxs, 3:7]
+            rfinger_pos = self.rb_states[self.rfinger_idxs, :3]
+            rfinger_rot = self.rb_states[self.rfinger_idxs, 3:7]
+            lfinger_grasp_rot, lfinger_grasp_pos = tf_combine(
+                lfinger_rot, lfinger_pos,
+                self.local_grasp_rot, self.local_grasp_pos
+            )
+            rfinger_grasp_rot, rfinger_grasp_pos = tf_combine(
+                rfinger_rot, rfinger_pos,
+                self.local_grasp_rot, self.local_grasp_pos
+            )
+            lfinger2obj = torch.clamp(torch.norm(box_pos - lfinger_grasp_pos, dim=-1), min=0.025)
+            rfinger2obj = torch.clamp(torch.norm(box_pos - rfinger_grasp_pos, dim=-1), min=0.025)
+            rew = 0.01 * 1 / lfinger2obj + 0.01 * (1 / rfinger2obj) + 0.1 * (1 / (0.04 + distance) - 4)+ 0.0 * (distance < self.box_size).float()
         else:
             raise NotImplementedError
         self.rew_buf = rew
@@ -408,8 +445,8 @@ class PandaPushEnv(BaseTask):
             self.gym.end_access_image_tensors(self.sim)
             start_idx = 3 * self.cfg.obs.im_size ** 2
         elif self.cfg.obs.type == "state":
-            self.obs_buf[:, :7] = self.rb_states[self.box_idxs, :7]
-            start_idx = 7
+            self.obs_buf[:, :3] = self.rb_states[self.box_idxs, :3]
+            start_idx = 3
         else:
             raise NotImplementedError
         # Low dimensional states
@@ -417,5 +454,6 @@ class PandaPushEnv(BaseTask):
             2 * (self.dof_pos[:, :8, 0] - self.franka_lower_limits[:8]) / (self.franka_upper_limits[:8] - self.franka_lower_limits[:8]) - 1, 
             self.dof_vel[:, :8, 0] * self.sim_params.dt, 
             2 * (self.motor_pos_target[:, :8] - self.franka_lower_limits[:8]) / (self.franka_upper_limits[:8] - self.franka_lower_limits[:8]) - 1,
+            self.rb_states[self.hand_idxs, :3],
             self.box_goals
         ], dim=-1)
