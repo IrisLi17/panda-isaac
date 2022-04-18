@@ -300,7 +300,7 @@ class PandaPushEnv(BaseTask):
                 self.franka_lower_limits, self.franka_upper_limits
             )
         # new4
-        # dof_pos[:, 8] = dof_pos[:, 7]
+        dof_pos[:, 8] = dof_pos[:, 7]
         self.dof_pos[env_ids, :, 0] = dof_pos
         # print("desired", self.dof_pos[0, :, 0])
         
@@ -311,9 +311,9 @@ class PandaPushEnv(BaseTask):
         self.motor_pos_target[env_ids, :] = dof_pos
         self.gym.set_dof_position_target_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.motor_pos_target), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
-        # torques = torch.zeros_like(self.last_torques)
-        # self.gym.set_dof_actuation_force_tensor_indexed(
-        #     self.sim, gymtorch.unwrap_tensor(torques), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
+        torques = torch.zeros_like(self.last_torques)
+        self.gym.set_dof_actuation_force_tensor_indexed(
+            self.sim, gymtorch.unwrap_tensor(torques), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
         
     def _reset_root_states(self, env_ids):
         # Randomize box position
@@ -322,6 +322,7 @@ class PandaPushEnv(BaseTask):
         self.root_state[actor_ids_long, 0] = self.table_position[0] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
         self.root_state[actor_ids_long, 1] = self.table_position[1] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
         self.root_state[actor_ids_long, 2] = self.box_position[2]
+        self.root_state[actor_ids_long, 7:13] = 0
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.root_state), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32)
         )

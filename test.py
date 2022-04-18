@@ -33,14 +33,14 @@ class TestJointConfig(BaseConfig):
     class env(BaseConfig.env):
         seed = 42
         num_envs = 1
-        num_observations = 7 + 27
-        # num_observations = 3 * 224 * 224 + 27
+        # num_observations = 3 + 30
+        num_observations = 3 * 224 * 224 + 30
         num_actions = 8
         max_episode_length = 50
     
     class obs(BaseConfig.obs):
-        type = "state"
-        # type = "pixel"
+        # type = "state"
+        type = "pixel"
         im_size = 224
     
     class control(BaseConfig.control):
