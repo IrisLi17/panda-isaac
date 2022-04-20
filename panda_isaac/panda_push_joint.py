@@ -1,4 +1,5 @@
 import math
+import random
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymtorch
@@ -18,6 +19,7 @@ class PandaPushEnv(BaseTask):
         # for image observation
         self.im_mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float, device=self.device).view(3, 1, 1)
         self.im_std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float, device=self.device).view(3, 1, 1)
+        self.goal_in_air = 0
 
     def create_sim(self):
         self.up_axis_idx = 2 # 2 for z, 1 for y -> adapt gravity accordingly
@@ -72,6 +74,8 @@ class PandaPushEnv(BaseTask):
         franka_dof_props["stiffness"][7:].fill(1.0e6)
         franka_dof_props["damping"][7:].fill(1.0e2)
         franka_dof_props["effort"][7:] = 200
+        # franka_dof_props["stiffness"][7:].fill(800.0)
+        # franka_dof_props["damping"][7:].fill(40.0)
         
         self.franka_dof_stiffness = to_torch([400.0] * 7 + [1.0e6] * 2)
         self.franka_dof_damping = to_torch([80.0] * 7 + [1.0e2] * 2)
@@ -80,7 +84,7 @@ class PandaPushEnv(BaseTask):
         # self.franka_dof_damping = to_torch([50.0] * 3 + [20.0] * 3 + [10.0] + [1.0e2] * 2)
         self.franka_dof_effort = to_torch(franka_dof_props["effort"])
         
-        self.franka_dof_speed_scales = 1.0 * to_torch(franka_dof_props["velocity"])
+        self.franka_dof_speed_scales = 0.8 * to_torch(franka_dof_props["velocity"])
         self.franka_dof_speed_scales[7:] = 0.1
 
 
@@ -98,8 +102,9 @@ class PandaPushEnv(BaseTask):
         default_dof_state["pos"] = default_dof_pos
 
         # send to torch
-        self.default_dof_pos_tensor = to_torch(default_dof_pos, device=self.device)
-
+        self.default_dof_pos_tensor = to_torch(default_dof_pos, device=self.device).unsqueeze(dim=0).repeat((self.num_envs, 1))
+        self._default_dof_initialized = False
+        
         # get link index of panda hand, which we will use as end effector
         franka_link_dict = self.gym.get_asset_rigid_body_dict(franka_asset)
         self.franka_hand_index = franka_link_dict["panda_hand"]
@@ -269,9 +274,50 @@ class PandaPushEnv(BaseTask):
         }
         self.extras["episode"] = {k: None for k in self.episode_sums}
         
+    def _init_default_dof(self):
+        _jacobian = self.gym.acquire_jacobian_tensor(self.sim, "franka")
+        jacobian = gymtorch.wrap_tensor(_jacobian)
+
+        # jacobian entries corresponding to franka hand
+        j_eef = jacobian[:, self.franka_hand_index - 1, :, :7]
+
+        # desired_x = self.table_position[0] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.4 - 0.1
+        desired_x = 0.4 * torch.ones((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False)
+        # desired_y = self.table_position[1] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.6 - 0.3
+        desired_y = 0.0 * torch.ones((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False)
+        # desired_z = 0.52 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.2
+        desired_z = 0.7 * torch.ones((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False)
+        desired_pos = torch.stack([desired_x, desired_y, desired_z], dim=-1)
+        for _ in range(10):
+            pos_error = desired_pos - self.rb_states[self.hand_idxs, :3]
+            desired_rot = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float, device=self.device, requires_grad=False).unsqueeze(dim=0).repeat((self.num_envs, 1))
+            rot_error = orientation_error(desired_rot, self.rb_states[self.hand_idxs, 3:7])
+            dpose = torch.cat([pos_error, rot_error], dim=-1).unsqueeze(dim=-1)
+            dof_pos = self.dof_pos.squeeze(-1)[:, :7] + control_ik(dpose, j_eef, 0.05)
+            self.dof_pos[: ,:7, 0] = dof_pos
+            self.motor_pos_target[:, :7] = dof_pos
+            self.gym.set_dof_state_tensor(self.sim, gymtorch.unwrap_tensor(self.dof_states))
+            self.gym.set_dof_position_target_tensor(
+                self.sim, gymtorch.unwrap_tensor(self.motor_pos_target))
+            torques = torch.zeros_like(self.last_torques)
+            self.gym.set_dof_actuation_force_tensor(
+                self.sim, gymtorch.unwrap_tensor(torques))
+            # step the physics
+            self.gym.simulate(self.sim)
+            self.gym.fetch_results(self.sim, True)
+            self.gym.refresh_actor_root_state_tensor(self.sim)
+            self.gym.refresh_jacobian_tensors(self.sim)
+            self.gym.refresh_mass_matrix_tensors(self.sim)
+            self.gym.refresh_rigid_body_state_tensor(self.sim)
+            self.gym.refresh_dof_state_tensor(self.sim)
+        self.default_dof_pos_tensor[:, :7] = self.dof_pos[:, :7, 0]
+        self._default_dof_initialized = True
+
     def reset_idx(self, env_ids):
         if len(env_ids) == 0:
             return
+        # if not self._default_dof_initialized:
+        #     self._init_default_dof()
         # reset robot states
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
@@ -306,7 +352,7 @@ class PandaPushEnv(BaseTask):
         else:
             dof_pos = tensor_clamp(
                 # new3 0.5, new4 revert
-                self.default_dof_pos_tensor.unsqueeze(0) + 0.25 * (dof_pos_noise - 0.5),
+                self.default_dof_pos_tensor[env_ids] + 0.25 * (dof_pos_noise - 0.5),
                 self.franka_lower_limits, self.franka_upper_limits
             )
         # new4
@@ -341,6 +387,11 @@ class PandaPushEnv(BaseTask):
         self.box_goals[env_ids, 0] = self.table_position[0] + torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
         self.box_goals[env_ids, 1] = self.table_position[1] + torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
         self.box_goals[env_ids, 2] = self.table_dims[2] + self.box_size / 2
+        if np.random.uniform() < self.goal_in_air:
+            self.box_goals[env_ids, 2] += torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.4
+        # for evaluation only
+        # self.box_goals[env_ids, 0] = 0.5
+        # self.box_goals[env_ids, 1] = 0.0
     
     def step(self, actions):
         # actions = torch.clone(actions)
@@ -350,9 +401,9 @@ class PandaPushEnv(BaseTask):
         assert actions.shape[-1] == self.franka_num_dofs
         actions = torch.clamp(actions, -1.0, 1.0)
         # new4 revert
-        joint_target = self.motor_pos_target + self.franka_dof_speed_scales * self.sim_params.dt * actions * self.cfg.control.decimal
+        # joint_target = self.motor_pos_target + self.franka_dof_speed_scales * self.sim_params.dt * actions * self.cfg.control.decimal
         # new3
-        # joint_target = self.dof_pos.squeeze(dim=-1) + self.franka_dof_speed_scales * self.sim_params.dt * actions * self.cfg.control.decimal
+        joint_target = self.dof_pos.squeeze(dim=-1) + self.franka_dof_speed_scales * self.sim_params.dt * actions * self.cfg.control.decimal
         self.motor_pos_target[:, :] = tensor_clamp(joint_target, self.franka_lower_limits, self.franka_upper_limits)
 
         for i in range(self.cfg.control.decimal):
@@ -468,3 +519,6 @@ class PandaPushEnv(BaseTask):
             self.rb_states[self.hand_idxs, :3],
             self.box_goals
         ], dim=-1)
+    
+    def set_goal_in_air_ratio(self, goal_in_air):
+        self.goal_in_air = goal_in_air
