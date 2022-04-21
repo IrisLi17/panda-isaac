@@ -29,7 +29,7 @@ def control_osc(dpose, kp, kd, kp_null, kd_null, default_dof_pos_tensor, mm, j_e
     # roboticsproceedings.org/rss07/p31.pdf
     j_eef_inv = m_eef @ j_eef @ mm_inv
     u_null = kd_null * -dof_vel + kp_null * (
-        (default_dof_pos_tensor.view(1, -1, 1) - dof_pos + np.pi) % (2 * np.pi) - np.pi)
+        (default_dof_pos_tensor.view(dpose.shape[0], -1, 1) - dof_pos + np.pi) % (2 * np.pi) - np.pi)
     u_null = u_null[:, :7]
     u_null = mm @ u_null
     u += (torch.eye(7, device=dpose.device).unsqueeze(0) - torch.transpose(j_eef, 1, 2) @ j_eef_inv) @ u_null

@@ -2,7 +2,7 @@ import math
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymtorch
-from isaacgym.torch_utils import to_torch
+from isaacgym.torch_utils import to_torch, tf_combine
 from panda_isaac.base_config import BaseConfig
 from panda_isaac.base_task import BaseTask
 import torch
@@ -86,7 +86,8 @@ class PandaPushEnv(BaseTask):
         default_dof_state["pos"] = default_dof_pos
 
         # send to torch
-        self.default_dof_pos_tensor = to_torch(default_dof_pos, device=self.device)
+        self.default_dof_pos_tensor = to_torch(default_dof_pos, device=self.device).unsqueeze(dim=0).repeat((self.num_envs, 1))
+        self._default_dof_initialized = False
 
         # get link index of panda hand, which we will use as end effector
         franka_link_dict = self.gym.get_asset_rigid_body_dict(franka_asset)
@@ -179,15 +180,26 @@ class PandaPushEnv(BaseTask):
                 cam_props.supersampling_vertical = self.cfg.cam.ss
                 cam_props.enable_tensors = True
                 cam_handle = self.gym.create_camera_sensor(env, cam_props)
-                rigid_body_hand_ind = self.gym.find_actor_rigid_body_handle(env, franka_handle, "panda_hand")
-                local_t = gymapi.Transform()
-                local_t.p = gymapi.Vec3(*self.cfg.cam.loc_p)
-                xyz_angle_rad = [np.radians(a) for a in self.cfg.cam.loc_r]
-                local_t.r = gymapi.Quat.from_euler_zyx(*xyz_angle_rad)
-                self.gym.attach_camera_to_body(
-                    cam_handle, env, rigid_body_hand_ind,
-                    local_t, gymapi.FOLLOW_TRANSFORM
-                )
+                if self.cfg.cam.view == "ego":
+                    # add camera on wrist
+                    rigid_body_hand_ind = self.gym.find_actor_rigid_body_handle(env, franka_handle, "panda_hand")
+                    local_t = gymapi.Transform()
+                    local_t.p = gymapi.Vec3(*self.cfg.cam.loc_p)
+                    xyz_angle_rad = [np.radians(a) for a in self.cfg.cam.loc_r]
+                    local_t.r = gymapi.Quat.from_euler_zyx(*xyz_angle_rad)
+                    self.gym.attach_camera_to_body(
+                        cam_handle, env, rigid_body_hand_ind,
+                        local_t, gymapi.FOLLOW_TRANSFORM
+                    )
+                elif self.cfg.cam.view == "third":
+                    # add third-person view camera
+                    self.gym.set_camera_location(
+                        cam_handle, env, 
+                        gymapi.Vec3(0.8, 0.0, 0.8), 
+                        gymapi.Vec3(0.3, 0.0, 0.5),
+                    )
+                else:
+                    raise NotImplementedError
                 self.cams.append(cam_handle)
                 # Camera tensor
                 cam_tensor = self.gym.get_camera_image_gpu_tensor(self.sim, env, cam_handle, gymapi.IMAGE_COLOR)
@@ -247,6 +259,11 @@ class PandaPushEnv(BaseTask):
         self.dof_pos = self.dof_states[:, 0].view(self.num_envs, 9, 1)
         self.dof_vel = self.dof_states[:, 1].view(self.num_envs, 9, 1)
 
+        self.local_grasp_pos = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
+        self.local_grasp_pos[:, 2] = 0.1034
+        self.local_grasp_rot = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device)
+        self.local_grasp_rot[:, 3] = 1
+
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         self.effort_action = torch.zeros_like(self.motor_pos_target)
@@ -259,6 +276,8 @@ class PandaPushEnv(BaseTask):
         # prepare buffers for goal
         self.box_goals = torch.zeros_like(self.rb_states[self.box_idxs, :3], requires_grad=False)
 
+        self.last_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False)
+
         # prepare buffers for episode info
         self.episode_sums = {
             "r": torch.zeros((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False),
@@ -266,10 +285,42 @@ class PandaPushEnv(BaseTask):
             "is_success": torch.zeros((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False),
         }
         self.extras["episode"] = {k: None for k in self.episode_sums}
-        
+
+    def _init_default_dof(self):
+        desired_x = self.table_position[0] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.4 - 0.1
+        desired_y = self.table_position[1] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.6 - 0.3
+        desired_z = 0.51 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.1
+        desired_pos = torch.stack([desired_x, desired_y, desired_z], dim=-1)
+        for _ in range(10):
+            pos_error = desired_pos - self.rb_states[self.hand_idxs, :3]
+            rot_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
+            dpose = torch.cat([pos_error, rot_error], dim=-1).unsqueeze(dim=-1)
+            dof_pos = self.dof_pos.squeeze(-1)[:, :7] + control_ik(dpose, self.j_eef, 0.05)
+            self.dof_pos[: ,:7, 0] = dof_pos
+            self.motor_pos_target[:, :7] = dof_pos
+            self.effort_action[:] = 0
+            self.gym.set_dof_state_tensor(self.sim, gymtorch.unwrap_tensor(self.dof_states))
+            self.gym.set_dof_position_target_tensor(
+                self.sim, gymtorch.unwrap_tensor(self.motor_pos_target))
+            self.gym.set_dof_actuation_force_tensor(
+                self.sim, gymtorch.unwrap_tensor(self.effort_action))
+       
+            # step the physics
+            self.gym.simulate(self.sim)
+            self.gym.fetch_results(self.sim, True)
+            self.gym.refresh_actor_root_state_tensor(self.sim)
+            self.gym.refresh_jacobian_tensors(self.sim)
+            self.gym.refresh_mass_matrix_tensors(self.sim)
+            self.gym.refresh_rigid_body_state_tensor(self.sim)
+            self.gym.refresh_dof_state_tensor(self.sim)
+        self.default_dof_pos_tensor[:, :7] = self.dof_pos[:, :7, 0]
+        self._default_dof_initialized = True
+    
     def reset_idx(self, env_ids):
         if len(env_ids) == 0:
             return
+        if not self._default_dof_initialized:
+            self._init_default_dof()
         # reset robot states
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
@@ -286,51 +337,24 @@ class PandaPushEnv(BaseTask):
         self.gym.refresh_mass_matrix_tensors(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
+        # Set last distance
+        self.last_distance[env_ids] = torch.norm(self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
     
     def _reset_dofs(self, env_ids):
         # Important! should feed actor id, not env id
         actor_ids_int32 = self.actor_ids_int32[env_ids, self.franka_handle].flatten()
-        self.dof_pos[env_ids, :, 0] = self.default_dof_pos_tensor.unsqueeze(dim=0)
+        self.dof_pos[env_ids, :, 0] = self.default_dof_pos_tensor[env_ids]
         
         self.dof_vel[env_ids, :, 0] = 0
         self.gym.set_dof_state_tensor_indexed(self.sim,
                                               gymtorch.unwrap_tensor(self.dof_states),
                                               gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
-        self.motor_pos_target[env_ids, :] = self.default_dof_pos_tensor.unsqueeze(dim=0)
+        self.motor_pos_target[env_ids, :] = self.default_dof_pos_tensor[env_ids]
         self.effort_action[env_ids, :] = 0
         self.gym.set_dof_position_target_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.motor_pos_target), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
         self.gym.set_dof_actuation_force_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.effort_action), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
-        
-        # '''
-        self.gym.simulate(self.sim)
-        self.gym.fetch_results(self.sim, True)
-        self.gym.refresh_dof_state_tensor(self.sim)
-        self.gym.refresh_jacobian_tensors(self.sim)
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        
-        _desired_eef_pos = torch.zeros((len(actor_ids_int32), 3), dtype=torch.float, device=self.device, requires_grad=False)
-        _desired_eef_pos[:, 0] = self.table_position[0] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
-        _desired_eef_pos[:, 1] = self.table_position[1] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
-        _desired_eef_pos[:, 2] = 0.52 + 0.2 * torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device)
-        self.target_eef_pos[env_ids, :] = _desired_eef_pos
-        # print("in reset, desired eef_pos", _desired_eef_pos[0])
-        pos_error = _desired_eef_pos - self.rb_states[self.hand_idxs, :3][env_ids]
-        orn_error = orientation_error(self.target_eef_orn[env_ids], self.rb_states[self.hand_idxs, 3:7][env_ids])
-        dpose = torch.cat([pos_error, orn_error], dim=-1).unsqueeze(dim=-1)
-        self.motor_pos_target[env_ids, :7] = self.dof_pos[env_ids, :7, 0] + control_ik(dpose, self.j_eef[env_ids], self.cfg.control.damping)
-        self.motor_pos_target[env_ids, 7:9] = 0.04
-        self.dof_pos[env_ids, :, 0] = self.motor_pos_target[env_ids, :]
-        self.dof_vel[env_ids, :, 0] = 0
-        
-        self.gym.set_dof_state_tensor_indexed(self.sim,
-                                              gymtorch.unwrap_tensor(self.dof_states),
-                                              gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
-        self.gym.set_dof_position_target_tensor_indexed(
-            self.sim, gymtorch.unwrap_tensor(self.motor_pos_target), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
-    
-        # '''
 
     def _reset_root_states(self, env_ids):
         # Randomize box position
@@ -339,6 +363,7 @@ class PandaPushEnv(BaseTask):
         self.root_state[actor_ids_long, 0] = self.table_position[0] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
         self.root_state[actor_ids_long, 1] = self.table_position[1] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
         self.root_state[actor_ids_long, 2] = self.box_position[2]
+        self.root_state[actor_ids_long, 7:13] = 0
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.root_state), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32)
         )
@@ -355,12 +380,13 @@ class PandaPushEnv(BaseTask):
                                               gymtorch.unwrap_tensor(self.dof_states),
                                               gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
     def step(self, actions):
+        actions = torch.clone(actions)
         actions = torch.clamp(actions, -1.0, 1.0)
-        eef_target = self.target_eef_pos + 0.05 * actions[:, :3]
+        eef_target = self.rb_states[self.hand_idxs, :3] + 0.05 * actions[:, :3]
         # TODO: do safe clip, find out where is "hand"
-        eef_target[:, 0] = torch.clamp(eef_target[:, 0], min=self.table_position[0] - 0.05, max=self.table_position[0] + 0.35)
-        eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
-        eef_target[:, 2] = torch.clamp(eef_target[:, 2], min=0.52)
+        # eef_target[:, 0] = torch.clamp(eef_target[:, 0], min=self.table_position[0] - 0.15, max=self.table_position[0] + 0.35)
+        # eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
+        # eef_target[:, 2] = torch.clamp(eef_target[:, 2], min=0.51)
         self.target_eef_pos[:] = eef_target
         initial_error = eef_target[0] - self.rb_states[self.hand_idxs, :3][0]
         for i in range(self.cfg.control.decimal):
@@ -440,7 +466,16 @@ class PandaPushEnv(BaseTask):
         if self.cfg.reward.type == "sparse":
             rew = (distance < self.box_size)
         elif self.cfg.reward.type == "dense":
-            rew = 0.1 * (-distance)
+            # hand_rot = self.rb_states[self.hand_idxs, 3:7]
+            # hand_pos = self.rb_states[self.hand_idxs, :3]
+            # tcp_rot, tcp_pos = tf_combine(
+            #     hand_rot, hand_pos,
+            #     self.local_grasp_rot, self.local_grasp_pos
+            # )
+            # tcp2obj = torch.norm(tcp_pos - box_pos, dim=-1)
+            # rew = torch.clamp(self.last_distance - distance, min=0)
+            rew = self.last_distance - distance
+            self.last_distance = distance
         else:
             raise NotImplementedError
         self.rew_buf = rew
@@ -463,12 +498,19 @@ class PandaPushEnv(BaseTask):
             self.gym.end_access_image_tensors(self.sim)
             start_idx = 3 * self.cfg.obs.im_size ** 2
         elif self.cfg.obs.type == "state":
-            self.obs_buf[:, :7] = self.rb_states[self.box_idxs, :7]
-            start_idx = 7
+            self.obs_buf[:, :3] = self.rb_states[self.box_idxs, :3]
+            start_idx = 3
         else:
             raise NotImplementedError
         # Low dimensional states
+        hand_rot = self.rb_states[self.hand_idxs, 3:7]
+        hand_pos = self.rb_states[self.hand_idxs, :3]
+        tcp_rot, tcp_pos = tf_combine(
+            hand_rot, hand_pos,
+            self.local_grasp_rot, self.local_grasp_pos
+        )
         self.obs_buf[:, start_idx:] = torch.cat([
             self.rb_states[self.hand_idxs, :3], self.rb_states[self.hand_idxs, 3:7], 
+            tcp_pos, tcp_rot, 
             self.dof_pos[:, 7:9, 0], self.target_eef_pos, self.box_goals
         ], dim=-1)
