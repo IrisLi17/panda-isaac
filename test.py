@@ -1,5 +1,5 @@
-# from panda_isaac.panda_push import PandaPushEnv
-from panda_isaac.panda_push_joint import PandaPushEnv
+from panda_isaac.panda_push import PandaPushEnv
+# from panda_isaac.panda_push_joint import PandaPushEnv
 from panda_isaac.base_config import BaseConfig
 import torch
 from PIL import Image
@@ -10,15 +10,16 @@ class TestConfig(BaseConfig):
     class env(BaseConfig.env):
         seed = 42
         num_envs = 1
-        # num_observations = 3 * 224 * 224 + 12
-        num_observations = 7 + 15
+        num_observations = 1 * 3 * 224 * 224 + 22
+        # num_observations = 3 + 22
         num_actions = 4
-        max_episode_length = 50
+        max_episode_length = 100
     
     class obs(BaseConfig.obs):
-        type = "state"
-        # type = "pixel"
+        # type = "state"
+        type = "pixel"
         im_size = 224
+        history_length = 1
     
     class control(BaseConfig.control):
         decimal = 6
@@ -32,9 +33,9 @@ class TestConfig(BaseConfig):
 class TestJointConfig(BaseConfig):
     class env(BaseConfig.env):
         seed = 42
-        num_envs = 1
+        num_envs = 16
         # num_observations = 3 + 30
-        num_observations = 3 * 224 * 224 + 30
+        num_observations = 1 * 3 * 224 * 224 + 30
         num_actions = 8
         max_episode_length = 50
     
@@ -42,6 +43,10 @@ class TestJointConfig(BaseConfig):
         # type = "state"
         type = "pixel"
         im_size = 224
+    
+    class cam(BaseConfig.cam):
+        view = "third"
+        fov = 120
     
     class control(BaseConfig.control):
         decimal = 6
@@ -51,20 +56,62 @@ class TestJointConfig(BaseConfig):
     class reward(BaseConfig.reward):
         type = "sparse"
 
-cfg = TestJointConfig()
-# cfg = TestConfig()
-env = PandaPushEnv(cfg, headless=True)
+
+class ManualController():
+    def __init__(self, env):
+        self.env = env
+        assert self.env.num_envs == 1
+        self.phase = 0
+        self.device = env.device
+    
+    def reset(self):
+        self.phase = 0
+    
+    def act(self):
+        hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
+        box_pos = self.env.rb_states[self.env.box_idxs, :3]
+        action = torch.zeros((1, 4), dtype=torch.float, device=self.device)
+        if self.phase == 0:
+            dpos = box_pos + torch.tensor([[0, 0, 0.15]], dtype=torch.float, device=self.device) - hand_pos
+            action[:, :3] = 10 * dpos
+            action[:, 3] = 1.0
+            if torch.norm(dpos) < 1e-2:
+                self.phase = 1
+        elif self.phase == 1:
+            dpos = box_pos + torch.tensor([[0, 0, 0.1035]], dtype=torch.float, device=self.device) - hand_pos
+            action[:, :3] = 10 * dpos
+            action[:, 3] = 1.0
+            if torch.norm(dpos) < 1e-2:
+                self.phase = 2
+        elif self.phase == 2:
+            action[:, :3] = 0
+            action[:, 3] = -1.0
+            if torch.all(self.env.dof_pos[0, 7:9, 0] < 0.0251):
+                self.phase = 3
+        elif self.phase == 3:
+            dpos = self.env.box_goals - box_pos
+            action[:, :3] = 10 * dpos
+            action[:, 2] = 0.5
+            action[:, 3] = -1.0
+        return action
+
+# cfg = TestJointConfig()
+cfg = TestConfig()
+env = PandaPushEnv(cfg, headless=False)
+controller = ManualController(env)
 obs = env.reset()
-for i in range(100):
+controller.reset()
+for i in range(200):
     action = 2 * torch.rand(size=(env.num_envs, env.num_actions), dtype=torch.float, device=env.device) - 1
+    action = controller.act()
     # action = 20 * (env.rb_states[env.box_idxs, :3] + torch.tensor([[0., 0., 0.15]], device=env.device) - env.rb_states[env.hand_idxs, :3])
     # action = 10 * (torch.from_numpy(np.array([[0.4, 0.0, 0.7]])).float().to(env.device).repeat(env.num_envs, 1) - env.rb_states[env.hand_idxs, :3])
     # action = torch.cat([action, torch.zeros(env.num_envs, 1, dtype=torch.float, device=env.device)], dim=-1)
     # print(i, action[0])
-    image = env.get_camera_image()
-    image = Image.fromarray(image.astype(np.uint8))
-    filename = "tmp/tmp%d.png" % i
-    image.save(filename)
+    # image = env.get_camera_image()
+    # image = Image.fromarray(image.astype(np.uint8))
+    # filename = "tmp/tmp%d.png" % i
+    # image.save(filename)
     if env.cfg.obs.type == "pixel":
         obs_image = obs[0, :3 * 224 * 224].reshape((3, 224, 224))
         obs_image = (obs_image * env.im_std + env.im_mean).permute(1, 2, 0) * 255
@@ -78,6 +125,7 @@ for i in range(100):
     # print(reward[0])
     if done[0]:
         print("reset", obs[0])
+        controller.reset()
 env.close()
 
 '''

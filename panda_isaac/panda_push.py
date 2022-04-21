@@ -351,6 +351,15 @@ class PandaPushEnv(BaseTask):
         self.gym.refresh_dof_state_tensor(self.sim)
         # Set last distance
         self.last_distance[env_ids] = torch.norm(self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
+        if self.cfg.reward.type == "dense":
+            hand_rot = self.rb_states[self.hand_idxs, 3:7][env_ids]
+            hand_pos = self.rb_states[self.hand_idxs, :3][env_ids]
+            tcp_rot, tcp_pos = tf_combine(
+                hand_rot, hand_pos,
+                self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
+            )
+            tcp2obj = torch.norm(tcp_pos - self.rb_states[self.box_idxs, :3][env_ids], dim=-1)
+            self.last_distance[env_ids] += 0.1 * tcp2obj
     
     def _reset_dofs(self, env_ids):
         # Important! should feed actor id, not env id
@@ -480,17 +489,18 @@ class PandaPushEnv(BaseTask):
         if self.cfg.reward.type == "sparse":
             rew = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1).float()
         elif self.cfg.reward.type == "dense":
-            # hand_rot = self.rb_states[self.hand_idxs, 3:7]
-            # hand_pos = self.rb_states[self.hand_idxs, :3]
-            # tcp_rot, tcp_pos = tf_combine(
-            #     hand_rot, hand_pos,
-            #     self.local_grasp_rot, self.local_grasp_pos
-            # )
-            # tcp2obj = torch.norm(tcp_pos - box_pos, dim=-1)
+            hand_rot = self.rb_states[self.hand_idxs, 3:7]
+            hand_pos = self.rb_states[self.hand_idxs, :3]
+            tcp_rot, tcp_pos = tf_combine(
+                hand_rot, hand_pos,
+                self.local_grasp_rot, self.local_grasp_pos
+            )
+            tcp2obj = torch.norm(tcp_pos - box_pos, dim=-1)
+            total_distance = distance + 0.1 * tcp2obj
             # rew = torch.clamp(self.last_distance - distance, min=0)
-            bonus = torch.logical_and(distance < self.box_size, self.last_distance - distance > 1e-3)
-            rew = torch.clamp(self.last_distance - distance, min=0) + bonus.float()
-            self.last_distance = distance
+            bonus = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1)
+            rew = torch.clamp(self.last_distance - total_distance, min=0) + bonus.float()
+            self.last_distance = total_distance
         else:
             raise NotImplementedError
         self.rew_buf = rew
