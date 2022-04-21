@@ -18,6 +18,7 @@ class PandaPushEnv(BaseTask):
         # for image observation
         self.im_mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float, device=self.device).view(3, 1, 1)
         self.im_std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float, device=self.device).view(3, 1, 1)
+        self.goal_in_air = 0.0
 
     def create_sim(self):
         self.up_axis_idx = 2 # 2 for z, 1 for y -> adapt gravity accordingly
@@ -264,6 +265,13 @@ class PandaPushEnv(BaseTask):
         self.local_grasp_rot = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device)
         self.local_grasp_rot[:, 3] = 1
 
+        # prepare image history if any
+        if self.cfg.obs.type == "pixel":
+            from collections import deque
+            self.image_history = deque(maxlen=self.cfg.obs.history_length)
+            for _ in range(self.cfg.obs.history_length):
+                self.image_history.append(torch.zeros((self.num_envs, 3 * 224 * 224), dtype=torch.float, device=self.device))
+
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         self.effort_action = torch.zeros_like(self.motor_pos_target)
@@ -329,6 +337,10 @@ class PandaPushEnv(BaseTask):
         for k in self.episode_sums:
             self.episode_sums[k][env_ids] = 0
         self.reset_buf[env_ids] = 1
+        # reset image history if any
+        if self.cfg.obs.type == "pixel":
+            for i in range(len(self.image_history)):
+                self.image_history[i][env_ids] = 0
         # step the physics
         self.gym.simulate(self.sim)
         self.gym.fetch_results(self.sim, True)
@@ -372,6 +384,8 @@ class PandaPushEnv(BaseTask):
         self.box_goals[env_ids, 0] = self.table_position[0] + torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
         self.box_goals[env_ids, 1] = self.table_position[1] + torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
         self.box_goals[env_ids, 2] = self.table_dims[2] + self.box_size / 2
+        if np.random.uniform() < self.goal_in_air:
+            self.box_goals[env_ids, 2] += torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.4
     
     def _set_dof_position(self, target_dof):
         actor_ids_int32 = self.actor_ids_int32[:, self.franka_handle].flatten().contiguous()
@@ -464,7 +478,7 @@ class PandaPushEnv(BaseTask):
         distance = torch.norm(box_pos - self.box_goals, dim=-1)
         # distance = torch.norm(hand_pos - hand_goal, dim=-1)
         if self.cfg.reward.type == "sparse":
-            rew = (distance < self.box_size)
+            rew = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1).float()
         elif self.cfg.reward.type == "dense":
             # hand_rot = self.rb_states[self.hand_idxs, 3:7]
             # hand_pos = self.rb_states[self.hand_idxs, :3]
@@ -474,7 +488,8 @@ class PandaPushEnv(BaseTask):
             # )
             # tcp2obj = torch.norm(tcp_pos - box_pos, dim=-1)
             # rew = torch.clamp(self.last_distance - distance, min=0)
-            rew = self.last_distance - distance
+            bonus = torch.logical_and(distance < self.box_size, self.last_distance - distance > 1e-3)
+            rew = torch.clamp(self.last_distance - distance, min=0) + bonus.float()
             self.last_distance = distance
         else:
             raise NotImplementedError
@@ -489,14 +504,18 @@ class PandaPushEnv(BaseTask):
             self.gym.step_graphics(self.sim)
             self.gym.render_all_camera_sensors(self.sim)
             self.gym.start_access_image_tensors(self.sim)
+            self.image_history.append(torch.zeros_like(self.image_history[0]))
             for i in range(self.num_envs):
                 crop_l = (self.cfg.cam.w - self.cfg.obs.im_size) // 2 if self.cfg.cam.crop == "center" else 0
                 crop_r = crop_l + self.cfg.obs.im_size
                 _rgb_obs = self.cam_tensors[i][:, crop_l:crop_r, :3].permute(2, 0, 1).float() / 255.
                 _rgb_obs = ((_rgb_obs - self.im_mean) / self.im_std).flatten()
-                self.obs_buf[i, :3 * self.cfg.obs.im_size ** 2] = _rgb_obs
+                self.image_history[-1][i, :] = _rgb_obs
+                # self.obs_buf[i, :3 * self.cfg.obs.im_size ** 2] = _rgb_obs
+            for i in range(len(self.image_history)):
+                self.obs_buf[:, 3 * 224 * 224 * i: 3 * 224 * 224 * (i + 1)] = self.image_history[i]
             self.gym.end_access_image_tensors(self.sim)
-            start_idx = 3 * self.cfg.obs.im_size ** 2
+            start_idx = 3 * self.cfg.obs.im_size ** 2 * len(self.image_history)
         elif self.cfg.obs.type == "state":
             self.obs_buf[:, :3] = self.rb_states[self.box_idxs, :3]
             start_idx = 3
@@ -514,3 +533,6 @@ class PandaPushEnv(BaseTask):
             tcp_pos, tcp_rot, 
             self.dof_pos[:, 7:9, 0], self.target_eef_pos, self.box_goals
         ], dim=-1)
+    
+    def set_goal_in_air_ratio(self, goal_in_air):
+        self.goal_in_air = goal_in_air

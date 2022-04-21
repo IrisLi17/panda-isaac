@@ -23,6 +23,7 @@ class BaseConfig(object):
     class obs:
         type: str
         im_size: int
+        history_length: int
 
     class control:
         decimal: int
