@@ -297,7 +297,7 @@ class PandaPushEnv(BaseTask):
     def _init_default_dof(self):
         desired_x = self.table_position[0] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.4 - 0.1
         desired_y = self.table_position[1] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.6 - 0.3
-        desired_z = 0.51 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.1
+        desired_z = 0.61 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.2
         desired_pos = torch.stack([desired_x, desired_y, desired_z], dim=-1)
         for _ in range(10):
             pos_error = desired_pos - self.rb_states[self.hand_idxs, :3]
