@@ -2,11 +2,11 @@ import math
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymtorch
-from isaacgym.torch_utils import to_torch, tf_combine
+from isaacgym.torch_utils import to_torch, tf_combine, tensor_clamp
 from panda_isaac.base_config import BaseConfig
 from panda_isaac.base_task import BaseTask
 import torch
-from panda_isaac.utils.ik_utils import orientation_error, control_ik, control_osc, control_cartesian_impedance
+from panda_isaac.utils.ik_utils import orientation_error, control_ik, control_osc, control_cartesian_pd
 
 
 class PandaPushEnv(BaseTask):
@@ -61,8 +61,10 @@ class PandaPushEnv(BaseTask):
         controller = self.cfg.control.controller
         if controller == "ik":
             franka_dof_props["driveMode"][:7].fill(gymapi.DOF_MODE_POS)
-            franka_dof_props["stiffness"][:7].fill(400.0)
-            franka_dof_props["damping"][:7].fill(40.0)
+            # franka_dof_props["stiffness"][:7].fill(400.0)
+            # franka_dof_props["damping"][:7].fill(40.0)
+            franka_dof_props["stiffness"][:7] = np.array([80.0, 120.0, 100.0, 100.0, 70.0, 50.0, 20.0])
+            franka_dof_props["damping"][:7] = np.array([10.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0])
             # franka_dof_props["damping"][:7].fill(80.0)
         else:       # osc and cartesian_impedance
             franka_dof_props["driveMode"][:7].fill(gymapi.DOF_MODE_EFFORT)
@@ -89,6 +91,8 @@ class PandaPushEnv(BaseTask):
         # send to torch
         self.default_dof_pos_tensor = to_torch(default_dof_pos, device=self.device).unsqueeze(dim=0).repeat((self.num_envs, 1))
         self._default_dof_initialized = False
+
+        self.franka_dof_effort = to_torch(franka_dof_props["effort"][:7])
 
         # get link index of panda hand, which we will use as end effector
         franka_link_dict = self.gym.get_asset_rigid_body_dict(franka_asset)
@@ -275,6 +279,7 @@ class PandaPushEnv(BaseTask):
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         self.effort_action = torch.zeros_like(self.motor_pos_target)
+        self.last_torques = torch.zeros(self.num_envs, 7, dtype=torch.float, device=self.device)
         self.target_eef_orn = torch.tensor([[1.0, 0., 0., 0.]], dtype=torch.float, device=self.device, requires_grad=False).repeat((self.num_envs, 1))
         self.target_eef_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device, requires_grad=False)
         if isinstance(self.kp, torch.Tensor):
@@ -337,6 +342,7 @@ class PandaPushEnv(BaseTask):
         for k in self.episode_sums:
             self.episode_sums[k][env_ids] = 0
         self.reset_buf[env_ids] = 1
+        self.last_torques[env_ids] = 0
         # reset image history if any
         if self.cfg.obs.type == "pixel":
             for i in range(len(self.image_history)):
@@ -406,6 +412,7 @@ class PandaPushEnv(BaseTask):
         actions = torch.clone(actions)
         actions = torch.clamp(actions, -1.0, 1.0)
         eef_target = self.rb_states[self.hand_idxs, :3] + 0.05 * actions[:, :3]
+        filtered_pos_target = self.rb_states[self.hand_idxs, :3]
         # TODO: do safe clip, find out where is "hand"
         # eef_target[:, 0] = torch.clamp(eef_target[:, 0], min=self.table_position[0] - 0.15, max=self.table_position[0] + 0.35)
         # eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
@@ -413,20 +420,44 @@ class PandaPushEnv(BaseTask):
         self.target_eef_pos[:] = eef_target
         initial_error = eef_target[0] - self.rb_states[self.hand_idxs, :3][0]
         for i in range(self.cfg.control.decimal):
-            pos_error = eef_target - self.rb_states[self.hand_idxs, :3]
+            filtered_pos_target = self.cfg.control.filter_param * eef_target + (1 - self.cfg.control.filter_param) * filtered_pos_target
+            pos_error = filtered_pos_target - self.rb_states[self.hand_idxs, :3]
             orn_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
             dpose = torch.cat([pos_error, orn_error], dim=-1).unsqueeze(dim=-1)
             if self.cfg.control.controller == "ik":
                 self.motor_pos_target[:, :7] = self.dof_pos[:, :7, 0] + control_ik(dpose, self.j_eef, self.damping)
             elif self.cfg.control.controller == "osc":
-                self.effort_action[:, :7] = control_osc(
+                calculate_torque = control_osc(
                     dpose, self.kp, self.kd, self.kp_null, self.kd_null,
-                    self.default_dof_pos_tensor, self.mm, self.j_eef, self.dof_pos, self.dof_vel, self.rb_states[self.hand_idxs, 7:]
+                    self.default_dof_pos_tensor, self.mm, self.j_eef, self.dof_pos, self.dof_vel, self.j_eef @ self.dof_vel[:, :7]
                 )
+                diff = calculate_torque - self.last_torques
+                self.effort_action[:, :7] = tensor_clamp(
+                    self.last_torques + torch.clamp(diff, -1000 * self.sim_params.dt, 1000 * self.sim_params.dt),
+                    -self.franka_dof_effort, self.franka_dof_effort
+                )
+                self.last_torques[:] = self.effort_action[:, :7]
             elif self.cfg.control.controller == "cartesian_impedance":
-                self.effort_action[:, :7] = control_cartesian_impedance(
-                    dpose, self.kp, self.kd, self.kp_null, self.kd_null,
-                    self.default_dof_pos_tensor[:7], self.j_eef, self.dof_pos[:, :7], self.dof_vel[:, :7]
+                # self.effort_action[:, :7] = control_cartesian_impedance(
+                #     dpose, self.kp, self.kd, self.kp_null, self.kd_null,
+                #     self.default_dof_pos_tensor[:, :7], self.j_eef, self.dof_pos[:, :7], self.dof_vel[:, :7]
+                # )
+                hand_rot = self.rb_states[self.hand_idxs, 3:7]
+                hand_pos = self.rb_states[self.hand_idxs, :3]
+                tcp_rot, tcp_pos = tf_combine(
+                    hand_rot, hand_pos,
+                    self.local_grasp_rot, self.local_grasp_pos
+                )
+                tcp_desired_rot, tcp_desired_pos = tf_combine(
+                    self.target_eef_orn, self.target_eef_pos, 
+                    self.local_grasp_rot, self.local_grasp_pos
+                )
+                ee_vel_desired = torch.zeros_like(tcp_pos)
+                ee_rvel_desired = torch.zeros_like(tcp_pos)
+                self.effort_action[:, :7] = control_cartesian_pd(
+                    self.dof_pos[:, :7], self.dof_vel[:, :7], tcp_pos, tcp_rot, self.j_eef, 
+                    tcp_desired_pos, tcp_desired_rot,
+                    ee_vel_desired, ee_rvel_desired, self.kp, self.kd
                 )
             self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * actions[:, -1:].repeat((1, 2))
             # print(self.dof_pos[0, :, 0])

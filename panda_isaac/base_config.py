@@ -30,6 +30,7 @@ class BaseConfig(object):
         controller: str  # "ik" or "osc"
         damping = 0.05
 
+        filter_param = 0.2
         # OSC params
         kp = 150.
         kd = 2.0 * np.sqrt(kp)

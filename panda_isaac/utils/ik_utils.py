@@ -1,4 +1,4 @@
-from isaacgym.torch_utils import quat_conjugate, quat_mul
+from isaacgym.torch_utils import quat_conjugate, quat_mul, normalize
 import torch
 import numpy as np
 
@@ -22,7 +22,7 @@ def control_osc(dpose, kp, kd, kp_null, kd_null, default_dof_pos_tensor, mm, j_e
     m_eef_inv = j_eef @ mm_inv @ torch.transpose(j_eef, 1, 2)
     m_eef = torch.inverse(m_eef_inv)
     u = torch.transpose(j_eef, 1, 2) @ m_eef @ (
-        kp * dpose - kd * hand_vel.unsqueeze(-1))
+        kp * dpose - kd * hand_vel)
 
     # Nullspace control torques `u_null` prevents large changes in joint configuration
     # They are added into the nullspace of OSC so that the end effector orientation remains constant
@@ -49,7 +49,7 @@ def control_cartesian_impedance(dpose: torch.tensor, kp: torch.tensor, kd: torch
     j_T_pinv = pseudo_inverse(j_eef_T)
     tau_task = j_eef_T @ (kp @ dpose - kd @ (j_eef @ dof_vel))
     tau_nullspace = (torch.eye(7, device=dpose.device).unsqueeze(dim=0).repeat(dpose.shape[0], 1, 1) - j_eef_T @ j_T_pinv) @ \
-        (kp_null * (default_dof_pos_tensor.view(1, -1, 1) - dof_pos) - kd_null * dof_vel)
+        (kp_null * (default_dof_pos_tensor.view(dpose.shape[0], -1, 1) - dof_pos) - kd_null * dof_vel)
     tau_d = tau_task + tau_nullspace
     # Should add coriolis, for now disable gravity to bypass it
     # Should saturateTorque
@@ -67,3 +67,67 @@ def control_cartesian_impedance(dpose: torch.tensor, kp: torch.tensor, kd: torch
 #   tau_d << tau_task + tau_nullspace + coriolis;
 #   // Saturate torque rate to avoid discontinuities
 #   tau_d << saturateTorqueRate(tau_d, tau_J_d);
+
+def control_cartesian_pd(dof_pos, dof_vel, ee_pos, ee_quat, jacobian, ee_pos_desired, ee_quat_desired,
+                         ee_vel_desired, ee_rvel_desired, kp, kd):
+    # State extraction
+    joint_pos_current = dof_pos
+    joint_vel_current = dof_vel
+
+    # Control logic
+    ee_pos_current, ee_quat_current = ee_pos, ee_quat
+    ee_twist_current = jacobian @ joint_vel_current
+
+    # Compute pose error (from https://frankaemika.github.io/libfranka/cartesian_impedance_control_8cpp-example.html)
+    pos_err = ee_pos_desired - ee_pos_current
+
+    ori_err = orientation_error(ee_quat_desired, ee_quat_current)
+
+    pose_err = torch.cat([pos_err, ori_err], dim=-1).unsqueeze(dim=-1)
+
+    # Compute twist error
+    twist_desired = torch.cat([ee_vel_desired, ee_rvel_desired], dim=-1).unsqueeze(dim=-1)
+    twist_err = twist_desired - ee_twist_current
+
+    # Compute feedback
+    wrench_feedback = kp @ pose_err + kd @ twist_err
+
+    torque_feedback = torch.transpose(jacobian, 1, 2) @ wrench_feedback
+    return torque_feedback.squeeze(dim=-1)
+
+    torque_feedforward = self.invdyn(
+        joint_pos_current, joint_vel_current, torch.zeros_like(joint_pos_current)
+    )  # coriolis
+
+    torque_out = torque_feedback + torque_feedforward
+
+
+def test_orientation_error():
+    def gen_rand_quat(num_envs):
+        alpha = 2 * np.pi * torch.rand((num_envs,), dtype=torch.float) - np.pi
+        beta = 2 * np.pi * torch.rand((num_envs,), dtype=torch.float) - np.pi
+        theta = 2 * np.pi * torch.rand((num_envs,), dtype=torch.float) - np.pi
+        return torch.stack([
+            torch.sin(theta / 2) * torch.cos(alpha) * torch.cos(beta),
+            torch.sin(theta / 2) * torch.cos(alpha) * torch.sin(beta),
+            torch.sin(theta / 2) * torch.sin(alpha),
+            torch.cos(theta / 2)], dim=-1)
+    q1 = gen_rand_quat(16)
+    q2 = gen_rand_quat(16)
+    error1 = orientation_error(q1, q2)
+    print(error1[0])
+    
+    quat_curr_inv = quat_conjugate(q2) / torch.norm(q2, dim=-1).square().unsqueeze(dim=-1)
+    quat_err = quat_mul(quat_curr_inv, q1)
+    quat_err_n = normalize(quat_err)
+    print("quat_err_n", quat_err_n[0])
+    rot_mtx = torch.zeros((16, 3, 3), dtype=torch.float)
+    from panda_isaac.utils.kinematics import quat2mtx
+    quat2mtx(q2, rot_mtx)
+    error2 = rot_mtx @ (quat_err_n[:, 0:3].unsqueeze(dim=-1))
+    error2 = error2.squeeze(dim=-1)
+    print(error2.shape)
+    print(torch.norm(error1 - error2))
+
+if __name__ == "__main__":
+    test_orientation_error()
