@@ -12,7 +12,7 @@ class BaseConfig(object):
     class cam:
         view = "ego"
         crop = "center"
-        w = 298
+        w = 398
         h = 224
         fov = 120
         # fov = 86
