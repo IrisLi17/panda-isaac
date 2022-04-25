@@ -10,8 +10,8 @@ class TestConfig(BaseConfig):
     class env(BaseConfig.env):
         seed = 42
         num_envs = 1
-        num_observations = 1 * 3 * 224 * 224 + 22
-        # num_observations = 3 + 22
+        num_observations = 1 * 3 * 224 * 224 + 15
+        # num_observations = 3 + 15
         num_actions = 4
         max_episode_length = 100
     
@@ -24,7 +24,15 @@ class TestConfig(BaseConfig):
     class control(BaseConfig.control):
         decimal = 6
         controller = "ik"
+        # controller = "cartesian_impedance"
+        # controller = "osc"
         damping = 0.05
+        kp_translation = 300 # 0-400
+        kp_rotation = 10  # 0-30
+        kd_translation = 2.0 * np.sqrt(kp_translation)
+        kd_rotation = 2.0 * np.sqrt(kp_rotation)
+        kp_null = 0.5
+        kd_null = 2.0 * np.sqrt(kp_null)
     
     class reward(BaseConfig.reward):
         type = "dense"
@@ -68,20 +76,21 @@ class ManualController():
         self.phase = 0
     
     def act(self):
-        hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
+        # hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
+        ee_pos =self.env.rb_states[self.env.ee_idxs, :3]
         box_pos = self.env.rb_states[self.env.box_idxs, :3]
         action = torch.zeros((1, 4), dtype=torch.float, device=self.device)
         if self.phase == 0:
-            dpos = box_pos + torch.tensor([[0, 0, 0.15]], dtype=torch.float, device=self.device) - hand_pos
-            action[:, :3] = 10 * dpos
+            dpos = box_pos + torch.tensor([[0, 0, 0.1]], dtype=torch.float, device=self.device) - ee_pos
+            action[:, :3] = 20 * dpos
             action[:, 3] = 1.0
             if torch.norm(dpos) < 1e-2:
                 self.phase = 1
         elif self.phase == 1:
-            dpos = box_pos + torch.tensor([[0, 0, 0.1035]], dtype=torch.float, device=self.device) - hand_pos
-            action[:, :3] = 10 * dpos
+            dpos = box_pos - ee_pos
+            action[:, :3] = 20 * dpos
             action[:, 3] = 1.0
-            if torch.norm(dpos) < 1e-2:
+            if torch.norm(dpos) < 1.5e-2:
                 self.phase = 2
         elif self.phase == 2:
             action[:, :3] = 0
@@ -90,28 +99,28 @@ class ManualController():
                 self.phase = 3
         elif self.phase == 3:
             dpos = self.env.box_goals - box_pos
-            action[:, :3] = 10 * dpos
+            action[:, :3] = 20 * dpos
             action[:, 2] = 0.5
             action[:, 3] = -1.0
         return action
 
 # cfg = TestJointConfig()
 cfg = TestConfig()
-env = PandaPushEnv(cfg, headless=False)
+env = PandaPushEnv(cfg, headless=True)
 controller = ManualController(env)
 obs = env.reset()
 controller.reset()
-for i in range(200):
+for i in range(100):
     action = 2 * torch.rand(size=(env.num_envs, env.num_actions), dtype=torch.float, device=env.device) - 1
     action = controller.act()
     # action = 20 * (env.rb_states[env.box_idxs, :3] + torch.tensor([[0., 0., 0.15]], device=env.device) - env.rb_states[env.hand_idxs, :3])
     # action = 10 * (torch.from_numpy(np.array([[0.4, 0.0, 0.7]])).float().to(env.device).repeat(env.num_envs, 1) - env.rb_states[env.hand_idxs, :3])
     # action = torch.cat([action, torch.zeros(env.num_envs, 1, dtype=torch.float, device=env.device)], dim=-1)
     # print(i, action[0])
-    # image = env.get_camera_image()
-    # image = Image.fromarray(image.astype(np.uint8))
-    # filename = "tmp/tmp%d.png" % i
-    # image.save(filename)
+    image = env.get_camera_image()
+    image = Image.fromarray(image.astype(np.uint8))
+    filename = "tmp/tmp%d.png" % i
+    image.save(filename)
     if env.cfg.obs.type == "pixel":
         obs_image = obs[0, :3 * 224 * 224].reshape((3, 224, 224))
         obs_image = (obs_image * env.im_std + env.im_mean).permute(1, 2, 0) * 255

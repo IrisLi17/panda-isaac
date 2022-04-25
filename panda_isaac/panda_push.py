@@ -117,6 +117,7 @@ class PandaPushEnv(BaseTask):
         self.envs = []
         self.box_idxs = []
         self.hand_idxs = []
+        self.ee_idxs = []
         init_pos_list = []
         init_rot_list = []
         self.cams = []
@@ -174,6 +175,9 @@ class PandaPushEnv(BaseTask):
             # get global index of hand in rigid body state tensor
             hand_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_hand", gymapi.DOMAIN_SIM)
             self.hand_idxs.append(hand_idx)
+
+            ee_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_ee", gymapi.DOMAIN_SIM)
+            self.ee_idxs.append(ee_idx)
 
             if self.cfg.obs.type == "pixel":
                 # add camera on wrist
@@ -411,18 +415,18 @@ class PandaPushEnv(BaseTask):
     def step(self, actions):
         actions = torch.clone(actions)
         actions = torch.clamp(actions, -1.0, 1.0)
-        eef_target = self.rb_states[self.hand_idxs, :3] + 0.05 * actions[:, :3]
-        filtered_pos_target = self.rb_states[self.hand_idxs, :3]
+        eef_target = self.rb_states[self.ee_idxs, :3] + 0.05 * actions[:, :3]
+        filtered_pos_target = self.rb_states[self.ee_idxs, :3]
         # TODO: do safe clip, find out where is "hand"
         # eef_target[:, 0] = torch.clamp(eef_target[:, 0], min=self.table_position[0] - 0.15, max=self.table_position[0] + 0.35)
         # eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
         # eef_target[:, 2] = torch.clamp(eef_target[:, 2], min=0.51)
         self.target_eef_pos[:] = eef_target
-        initial_error = eef_target[0] - self.rb_states[self.hand_idxs, :3][0]
+        initial_error = eef_target[0] - self.rb_states[self.ee_idxs, :3][0]
         for i in range(self.cfg.control.decimal):
             filtered_pos_target = self.cfg.control.filter_param * eef_target + (1 - self.cfg.control.filter_param) * filtered_pos_target
-            pos_error = filtered_pos_target - self.rb_states[self.hand_idxs, :3]
-            orn_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
+            pos_error = filtered_pos_target - self.rb_states[self.ee_idxs, :3]
+            orn_error = orientation_error(self.target_eef_orn, self.rb_states[self.ee_idxs, 3:7])
             dpose = torch.cat([pos_error, orn_error], dim=-1).unsqueeze(dim=-1)
             if self.cfg.control.controller == "ik":
                 self.motor_pos_target[:, :7] = self.dof_pos[:, :7, 0] + control_ik(dpose, self.j_eef, self.damping)
@@ -475,8 +479,7 @@ class PandaPushEnv(BaseTask):
             self.gym.refresh_jacobian_tensors(self.sim)
             self.gym.refresh_mass_matrix_tensors(self.sim)
 
-        end_error = self.target_eef_pos[0] - self.rb_states[self.hand_idxs, :3][0]
-        # print((end_error / initial_error).mean())
+        end_error = self.target_eef_pos[0] - self.rb_states[self.ee_idxs, :3][0]
         if self.cfg.obs.type == "pixel" or self.viewer is not None:
             self.gym.step_graphics(self.sim)
         # update viewer
@@ -520,12 +523,13 @@ class PandaPushEnv(BaseTask):
         if self.cfg.reward.type == "sparse":
             rew = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1).float()
         elif self.cfg.reward.type == "dense":
-            hand_rot = self.rb_states[self.hand_idxs, 3:7]
-            hand_pos = self.rb_states[self.hand_idxs, :3]
-            tcp_rot, tcp_pos = tf_combine(
-                hand_rot, hand_pos,
-                self.local_grasp_rot, self.local_grasp_pos
-            )
+            # hand_rot = self.rb_states[self.hand_idxs, 3:7]
+            # hand_pos = self.rb_states[self.hand_idxs, :3]
+            # tcp_rot, tcp_pos = tf_combine(
+            #     hand_rot, hand_pos,
+            #     self.local_grasp_rot, self.local_grasp_pos
+            # )
+            tcp_pos = self.rb_states[self.ee_idxs, :3]
             tcp2obj = torch.norm(tcp_pos - box_pos, dim=-1)
             total_distance = distance + 0.1 * tcp2obj
             # rew = torch.clamp(self.last_distance - distance, min=0)
@@ -563,14 +567,16 @@ class PandaPushEnv(BaseTask):
         else:
             raise NotImplementedError
         # Low dimensional states
-        hand_rot = self.rb_states[self.hand_idxs, 3:7]
-        hand_pos = self.rb_states[self.hand_idxs, :3]
-        tcp_rot, tcp_pos = tf_combine(
-            hand_rot, hand_pos,
-            self.local_grasp_rot, self.local_grasp_pos
-        )
+        # hand_rot = self.rb_states[self.hand_idxs, 3:7]
+        # hand_pos = self.rb_states[self.hand_idxs, :3]
+        # tcp_rot, tcp_pos = tf_combine(
+        #     hand_rot, hand_pos,
+        #     self.local_grasp_rot, self.local_grasp_pos
+        # )
+        tcp_pos = self.rb_states[self.ee_idxs, :3]
+        tcp_rot = self.rb_states[self.ee_idxs, 3:7]
         self.obs_buf[:, start_idx:] = torch.cat([
-            self.rb_states[self.hand_idxs, :3], self.rb_states[self.hand_idxs, 3:7], 
+            # self.rb_states[self.hand_idxs, :3], self.rb_states[self.hand_idxs, 3:7], 
             tcp_pos, tcp_rot, 
             self.dof_pos[:, 7:9, 0], self.target_eef_pos, self.box_goals
         ], dim=-1)
