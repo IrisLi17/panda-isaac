@@ -7,6 +7,7 @@ from panda_isaac.base_config import BaseConfig
 from panda_isaac.base_task import BaseTask
 import torch
 from panda_isaac.utils.ik_utils import orientation_error, control_ik, control_osc, control_cartesian_pd
+from collections import deque
 
 
 class PandaPushEnv(BaseTask):
@@ -97,6 +98,7 @@ class PandaPushEnv(BaseTask):
         # get link index of panda hand, which we will use as end effector
         franka_link_dict = self.gym.get_asset_rigid_body_dict(franka_asset)
         self.franka_hand_index = franka_link_dict["panda_hand"]
+        self.franka_ee_index = franka_link_dict["panda_ee"]
 
         # configure env grid
         num_per_row = int(math.sqrt(self.num_envs))
@@ -245,7 +247,7 @@ class PandaPushEnv(BaseTask):
         jacobian = gymtorch.wrap_tensor(_jacobian)
 
         # jacobian entries corresponding to franka hand
-        self.j_eef = jacobian[:, self.franka_hand_index - 1, :, :7]
+        self.j_eef = jacobian[:, self.franka_ee_index - 1, :, :7]
 
         # get mass matrix tensor
         _massmatrix = self.gym.acquire_mass_matrix_tensor(self.sim, "franka")
@@ -275,11 +277,13 @@ class PandaPushEnv(BaseTask):
 
         # prepare image history if any
         if self.cfg.obs.type == "pixel":
-            from collections import deque
             self.image_history = deque(maxlen=self.cfg.obs.history_length)
             for _ in range(self.cfg.obs.history_length):
                 self.image_history.append(torch.zeros((self.num_envs, 3 * 224 * 224), dtype=torch.float, device=self.device))
-
+        self.state_history = deque(maxlen=self.cfg.obs.history_length)
+        num_state = self.num_obs // self.cfg.obs.history_length if self.cfg.obs.type == "state" else self.num_obs // self.cfg.obs.history_length - 3 * 224 * 224
+        for _ in range(self.cfg.obs.history_length):
+            self.state_history.append(torch.zeros((self.num_envs, num_state), dtype=torch.float, device=self.device))
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         self.effort_action = torch.zeros_like(self.motor_pos_target)
@@ -306,11 +310,11 @@ class PandaPushEnv(BaseTask):
     def _init_default_dof(self):
         desired_x = self.table_position[0] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.4 - 0.1
         desired_y = self.table_position[1] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.6 - 0.3
-        desired_z = 0.61 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.2
+        desired_z = 0.5 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.2
         desired_pos = torch.stack([desired_x, desired_y, desired_z], dim=-1)
         for _ in range(10):
-            pos_error = desired_pos - self.rb_states[self.hand_idxs, :3]
-            rot_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
+            pos_error = desired_pos - self.rb_states[self.ee_idxs, :3]
+            rot_error = orientation_error(self.target_eef_orn, self.rb_states[self.ee_idxs, 3:7])
             dpose = torch.cat([pos_error, rot_error], dim=-1).unsqueeze(dim=-1)
             dof_pos = self.dof_pos.squeeze(-1)[:, :7] + control_ik(dpose, self.j_eef, 0.05)
             self.dof_pos[: ,:7, 0] = dof_pos
@@ -351,6 +355,8 @@ class PandaPushEnv(BaseTask):
         if self.cfg.obs.type == "pixel":
             for i in range(len(self.image_history)):
                 self.image_history[i][env_ids] = 0
+        for i in range(len(self.state_history)):
+            self.state_history[i][env_ids] = 0
         # step the physics
         self.gym.simulate(self.sim)
         self.gym.fetch_results(self.sim, True)
@@ -362,12 +368,13 @@ class PandaPushEnv(BaseTask):
         # Set last distance
         self.last_distance[env_ids] = torch.norm(self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
         if self.cfg.reward.type == "dense":
-            hand_rot = self.rb_states[self.hand_idxs, 3:7][env_ids]
-            hand_pos = self.rb_states[self.hand_idxs, :3][env_ids]
-            tcp_rot, tcp_pos = tf_combine(
-                hand_rot, hand_pos,
-                self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
-            )
+            # hand_rot = self.rb_states[self.hand_idxs, 3:7][env_ids]
+            # hand_pos = self.rb_states[self.hand_idxs, :3][env_ids]
+            # tcp_rot, tcp_pos = tf_combine(
+            #     hand_rot, hand_pos,
+            #     self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
+            # )
+            tcp_pos = self.rb_states[self.ee_idxs, :3][env_ids]
             tcp2obj = torch.norm(tcp_pos - self.rb_states[self.box_idxs, :3][env_ids], dim=-1)
             self.last_distance[env_ids] += 0.1 * tcp2obj
     
@@ -543,6 +550,7 @@ class PandaPushEnv(BaseTask):
         self.episode_sums["is_success"] += (distance < self.box_size).float()
     
     def compute_observations(self):
+        self.state_history.append(torch.zeros_like(self.state_history[0]))
         if self.cfg.obs.type == "pixel":
             # Image based
             self.gym.fetch_results(self.sim, True)
@@ -561,9 +569,11 @@ class PandaPushEnv(BaseTask):
                 self.obs_buf[:, 3 * 224 * 224 * i: 3 * 224 * 224 * (i + 1)] = self.image_history[i]
             self.gym.end_access_image_tensors(self.sim)
             start_idx = 3 * self.cfg.obs.im_size ** 2 * len(self.image_history)
+            state_start_idx = 0
         elif self.cfg.obs.type == "state":
-            self.obs_buf[:, :3] = self.rb_states[self.box_idxs, :3]
-            start_idx = 3
+            self.state_history[-1][:, :3] = self.rb_states[self.box_idxs, :3]
+            start_idx = 0
+            state_start_idx = 3
         else:
             raise NotImplementedError
         # Low dimensional states
@@ -575,11 +585,12 @@ class PandaPushEnv(BaseTask):
         # )
         tcp_pos = self.rb_states[self.ee_idxs, :3]
         tcp_rot = self.rb_states[self.ee_idxs, 3:7]
-        self.obs_buf[:, start_idx:] = torch.cat([
-            # self.rb_states[self.hand_idxs, :3], self.rb_states[self.hand_idxs, 3:7], 
-            tcp_pos, tcp_rot, 
-            self.dof_pos[:, 7:9, 0], self.target_eef_pos, self.box_goals
+        self.state_history[-1][:, state_start_idx:] = torch.cat([
+            tcp_pos, tcp_rot, self.dof_pos[:, 7:9, 0], self.target_eef_pos, self.box_goals
         ], dim=-1)
+        state_dim = self.state_history[0].shape[-1]
+        for i in range(len(self.state_history)):
+            self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i]
     
     def set_goal_in_air_ratio(self, goal_in_air):
         self.goal_in_air = goal_in_air
