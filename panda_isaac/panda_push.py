@@ -281,8 +281,8 @@ class PandaPushEnv(BaseTask):
             for _ in range(self.cfg.obs.history_length):
                 self.image_history.append(torch.zeros((self.num_envs, 3 * 224 * 224), dtype=torch.float, device=self.device))
         self.state_history = deque(maxlen=self.cfg.obs.history_length)
-        num_state = self.num_obs // self.cfg.obs.history_length if self.cfg.obs.type == "state" else self.num_obs // self.cfg.obs.history_length - 3 * 224 * 224
-        for _ in range(self.cfg.obs.history_length):
+        num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * 224 * 224 * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
+        for _ in range(self.cfg.obs.state_history_length):
             self.state_history.append(torch.zeros((self.num_envs, num_state), dtype=torch.float, device=self.device))
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)

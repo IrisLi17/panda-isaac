@@ -24,6 +24,7 @@ class BaseConfig(object):
         type: str
         im_size: int
         history_length: int
+        state_history_length: int
 
     class control:
         decimal: int
