@@ -20,6 +20,7 @@ class TestConfig(BaseConfig):
         type = "pixel"
         im_size = 224
         history_length = 1
+        state_history_length = 1
     
     class control(BaseConfig.control):
         decimal = 6
@@ -76,18 +77,17 @@ class ManualController():
         self.phase = 0
     
     def act(self):
-        # hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
-        ee_pos =self.env.rb_states[self.env.ee_idxs, :3]
+        hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
         box_pos = self.env.rb_states[self.env.box_idxs, :3]
         action = torch.zeros((1, 4), dtype=torch.float, device=self.device)
         if self.phase == 0:
-            dpos = box_pos + torch.tensor([[0, 0, 0.1]], dtype=torch.float, device=self.device) - ee_pos
+            dpos = box_pos + torch.tensor([[0, 0, 0.2034]], dtype=torch.float, device=self.device) - hand_pos
             action[:, :3] = 20 * dpos
             action[:, 3] = 1.0
             if torch.norm(dpos) < 1e-2:
                 self.phase = 1
         elif self.phase == 1:
-            dpos = box_pos - ee_pos
+            dpos = box_pos + torch.tensor([0, 0, 0.1034], dtype=torch.float, device=self.device) - hand_pos
             action[:, :3] = 20 * dpos
             action[:, 3] = 1.0
             if torch.norm(dpos) < 1.5e-2:

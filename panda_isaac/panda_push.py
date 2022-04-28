@@ -98,8 +98,7 @@ class PandaPushEnv(BaseTask):
         # get link index of panda hand, which we will use as end effector
         franka_link_dict = self.gym.get_asset_rigid_body_dict(franka_asset)
         self.franka_hand_index = franka_link_dict["panda_hand"]
-        self.franka_ee_index = franka_link_dict["panda_ee"]
-
+        
         # configure env grid
         num_per_row = int(math.sqrt(self.num_envs))
         spacing = 1.0
@@ -119,7 +118,6 @@ class PandaPushEnv(BaseTask):
         self.envs = []
         self.box_idxs = []
         self.hand_idxs = []
-        self.ee_idxs = []
         init_pos_list = []
         init_rot_list = []
         self.cams = []
@@ -177,9 +175,6 @@ class PandaPushEnv(BaseTask):
             # get global index of hand in rigid body state tensor
             hand_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_hand", gymapi.DOMAIN_SIM)
             self.hand_idxs.append(hand_idx)
-
-            ee_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_ee", gymapi.DOMAIN_SIM)
-            self.ee_idxs.append(ee_idx)
 
             if self.cfg.obs.type == "pixel":
                 # add camera on wrist
@@ -247,7 +242,7 @@ class PandaPushEnv(BaseTask):
         jacobian = gymtorch.wrap_tensor(_jacobian)
 
         # jacobian entries corresponding to franka hand
-        self.j_eef = jacobian[:, self.franka_ee_index - 1, :, :7]
+        self.j_eef = jacobian[:, self.franka_hand_index - 1, :, :7]
 
         # get mass matrix tensor
         _massmatrix = self.gym.acquire_mass_matrix_tensor(self.sim, "franka")
@@ -280,16 +275,21 @@ class PandaPushEnv(BaseTask):
             self.image_history = deque(maxlen=self.cfg.obs.history_length)
             for _ in range(self.cfg.obs.history_length):
                 self.image_history.append(torch.zeros((self.num_envs, 3 * 224 * 224), dtype=torch.float, device=self.device))
-        self.state_history = deque(maxlen=self.cfg.obs.history_length)
+        self.state_history = deque(maxlen=self.cfg.obs.state_history_length)
         num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * 224 * 224 * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
         for _ in range(self.cfg.obs.state_history_length):
             self.state_history.append(torch.zeros((self.num_envs, num_state), dtype=torch.float, device=self.device))
+        
+        # prepare obs
+        self.target_eef_pos_obs = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device, requires_grad=False)
+        
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         self.effort_action = torch.zeros_like(self.motor_pos_target)
         self.last_torques = torch.zeros(self.num_envs, 7, dtype=torch.float, device=self.device)
         self.target_eef_orn = torch.tensor([[1.0, 0., 0., 0.]], dtype=torch.float, device=self.device, requires_grad=False).repeat((self.num_envs, 1))
         self.target_eef_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device, requires_grad=False)
+        self.target_finger = torch.ones((self.num_envs, 1), dtype=torch.float, device=self.device, requires_grad=False)
         if isinstance(self.kp, torch.Tensor):
             self.kp = self.kp.to(self.device)
         if isinstance(self.kd, torch.Tensor):
@@ -310,11 +310,11 @@ class PandaPushEnv(BaseTask):
     def _init_default_dof(self):
         desired_x = self.table_position[0] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.4 - 0.1
         desired_y = self.table_position[1] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.6 - 0.3
-        desired_z = 0.5 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.2
+        desired_z = 0.6 + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.2
         desired_pos = torch.stack([desired_x, desired_y, desired_z], dim=-1)
         for _ in range(10):
-            pos_error = desired_pos - self.rb_states[self.ee_idxs, :3]
-            rot_error = orientation_error(self.target_eef_orn, self.rb_states[self.ee_idxs, 3:7])
+            pos_error = desired_pos - self.rb_states[self.hand_idxs, :3]
+            rot_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
             dpose = torch.cat([pos_error, rot_error], dim=-1).unsqueeze(dim=-1)
             dof_pos = self.dof_pos.squeeze(-1)[:, :7] + control_ik(dpose, self.j_eef, 0.05)
             self.dof_pos[: ,:7, 0] = dof_pos
@@ -368,13 +368,12 @@ class PandaPushEnv(BaseTask):
         # Set last distance
         self.last_distance[env_ids] = torch.norm(self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
         if self.cfg.reward.type == "dense":
-            # hand_rot = self.rb_states[self.hand_idxs, 3:7][env_ids]
-            # hand_pos = self.rb_states[self.hand_idxs, :3][env_ids]
-            # tcp_rot, tcp_pos = tf_combine(
-            #     hand_rot, hand_pos,
-            #     self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
-            # )
-            tcp_pos = self.rb_states[self.ee_idxs, :3][env_ids]
+            hand_rot = self.rb_states[self.hand_idxs, 3:7][env_ids]
+            hand_pos = self.rb_states[self.hand_idxs, :3][env_ids]
+            tcp_rot, tcp_pos = tf_combine(
+                hand_rot, hand_pos,
+                self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
+            )
             tcp2obj = torch.norm(tcp_pos - self.rb_states[self.box_idxs, :3][env_ids], dim=-1)
             self.last_distance[env_ids] += 0.1 * tcp2obj
     
@@ -421,19 +420,31 @@ class PandaPushEnv(BaseTask):
                                               gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
     def step(self, actions):
         actions = torch.clone(actions)
-        actions = torch.clamp(actions, -1.0, 1.0)
-        eef_target = self.rb_states[self.ee_idxs, :3] + 0.05 * actions[:, :3]
-        filtered_pos_target = self.rb_states[self.ee_idxs, :3]
+        if actions.shape[1] == 5:
+            action_type = actions[:, 0:1]
+            pos_action = torch.where(action_type == 0, torch.clamp(actions[:, 1:4], -1.0, 1.0), torch.zeros_like(actions[:, 1:4]))
+            gripper_action = torch.where(action_type == 1, torch.clamp(actions[:, 4:5], -1.0, 1.0), self.target_finger)
+        elif actions.shape[1] == 4:
+            pos_action = torch.clamp(actions[:, :3], -1.0, 1.0)
+            gripper_action = torch.clamp(actions[:, 3:], -1.0, 1.0)
+        eef_target = self.rb_states[self.hand_idxs, :3] + 0.05 * pos_action
+        filtered_pos_target = self.rb_states[self.hand_idxs, :3]
+
+        _, self.target_eef_pos_obs = tf_combine(
+            self.rb_states[self.hand_idxs, 3:7], eef_target,
+            self.local_grasp_rot, self.local_grasp_pos
+        )
         # TODO: do safe clip, find out where is "hand"
         # eef_target[:, 0] = torch.clamp(eef_target[:, 0], min=self.table_position[0] - 0.15, max=self.table_position[0] + 0.35)
         # eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
         # eef_target[:, 2] = torch.clamp(eef_target[:, 2], min=0.51)
         self.target_eef_pos[:] = eef_target
-        initial_error = eef_target[0] - self.rb_states[self.ee_idxs, :3][0]
+        self.target_finger[:] = gripper_action
+        initial_error = eef_target[0] - self.rb_states[self.hand_idxs, :3][0]
         for i in range(self.cfg.control.decimal):
             filtered_pos_target = self.cfg.control.filter_param * eef_target + (1 - self.cfg.control.filter_param) * filtered_pos_target
-            pos_error = filtered_pos_target - self.rb_states[self.ee_idxs, :3]
-            orn_error = orientation_error(self.target_eef_orn, self.rb_states[self.ee_idxs, 3:7])
+            pos_error = filtered_pos_target - self.rb_states[self.hand_idxs, :3]
+            orn_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
             dpose = torch.cat([pos_error, orn_error], dim=-1).unsqueeze(dim=-1)
             if self.cfg.control.controller == "ik":
                 self.motor_pos_target[:, :7] = self.dof_pos[:, :7, 0] + control_ik(dpose, self.j_eef, self.damping)
@@ -470,7 +481,7 @@ class PandaPushEnv(BaseTask):
                     tcp_desired_pos, tcp_desired_rot,
                     ee_vel_desired, ee_rvel_desired, self.kp, self.kd
                 )
-            self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * actions[:, -1:].repeat((1, 2))
+            self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * gripper_action.repeat((1, 2))
             # print(self.dof_pos[0, :, 0])
             self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(self.motor_pos_target))
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.effort_action))
@@ -486,7 +497,7 @@ class PandaPushEnv(BaseTask):
             self.gym.refresh_jacobian_tensors(self.sim)
             self.gym.refresh_mass_matrix_tensors(self.sim)
 
-        end_error = self.target_eef_pos[0] - self.rb_states[self.ee_idxs, :3][0]
+        end_error = self.target_eef_pos[0] - self.rb_states[self.hand_idxs, :3][0]
         if self.cfg.obs.type == "pixel" or self.viewer is not None:
             self.gym.step_graphics(self.sim)
         # update viewer
@@ -530,13 +541,12 @@ class PandaPushEnv(BaseTask):
         if self.cfg.reward.type == "sparse":
             rew = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1).float()
         elif self.cfg.reward.type == "dense":
-            # hand_rot = self.rb_states[self.hand_idxs, 3:7]
-            # hand_pos = self.rb_states[self.hand_idxs, :3]
-            # tcp_rot, tcp_pos = tf_combine(
-            #     hand_rot, hand_pos,
-            #     self.local_grasp_rot, self.local_grasp_pos
-            # )
-            tcp_pos = self.rb_states[self.ee_idxs, :3]
+            hand_rot = self.rb_states[self.hand_idxs, 3:7]
+            hand_pos = self.rb_states[self.hand_idxs, :3]
+            tcp_rot, tcp_pos = tf_combine(
+                hand_rot, hand_pos,
+                self.local_grasp_rot, self.local_grasp_pos
+            )
             tcp2obj = torch.norm(tcp_pos - box_pos, dim=-1)
             total_distance = distance + 0.1 * tcp2obj
             # rew = torch.clamp(self.last_distance - distance, min=0)
@@ -577,16 +587,14 @@ class PandaPushEnv(BaseTask):
         else:
             raise NotImplementedError
         # Low dimensional states
-        # hand_rot = self.rb_states[self.hand_idxs, 3:7]
-        # hand_pos = self.rb_states[self.hand_idxs, :3]
-        # tcp_rot, tcp_pos = tf_combine(
-        #     hand_rot, hand_pos,
-        #     self.local_grasp_rot, self.local_grasp_pos
-        # )
-        tcp_pos = self.rb_states[self.ee_idxs, :3]
-        tcp_rot = self.rb_states[self.ee_idxs, 3:7]
+        hand_rot = self.rb_states[self.hand_idxs, 3:7]
+        hand_pos = self.rb_states[self.hand_idxs, :3]
+        tcp_rot, tcp_pos = tf_combine(
+            hand_rot, hand_pos,
+            self.local_grasp_rot, self.local_grasp_pos
+        )
         self.state_history[-1][:, state_start_idx:] = torch.cat([
-            tcp_pos, tcp_rot, self.dof_pos[:, 7:9, 0], self.target_eef_pos, self.box_goals
+            tcp_pos, tcp_rot, self.dof_pos[:, 7:9, 0], self.target_eef_pos_obs, self.box_goals
         ], dim=-1)
         state_dim = self.state_history[0].shape[-1]
         for i in range(len(self.state_history)):
