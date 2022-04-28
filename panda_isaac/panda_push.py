@@ -600,5 +600,17 @@ class PandaPushEnv(BaseTask):
         for i in range(len(self.state_history)):
             self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i]
     
+    def get_state_obs(self):
+        hand_rot = self.rb_states[self.hand_idxs, 3:7]
+        hand_pos = self.rb_states[self.hand_idxs, :3]
+        tcp_rot, tcp_pos = tf_combine(
+            hand_rot, hand_pos,
+            self.local_grasp_rot, self.local_grasp_pos
+        )
+        return torch.cat([
+            self.rb_states[self.box_idxs, :3], tcp_pos, tcp_rot, self.dof_pos[:, 7:9, 0], 
+            self.target_eef_pos_obs, self.box_goals
+        ], dim=-1)
+    
     def set_goal_in_air_ratio(self, goal_in_air):
         self.goal_in_air = goal_in_air
