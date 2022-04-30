@@ -135,6 +135,10 @@ class PandaPushEnv(BaseTask):
 
             # add table
             table_handle = self.gym.create_actor(env, table_asset, table_pose, "table", i, 0)
+            color = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            self.gym.set_rigid_body_color(env, table_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
+            if i == 0:
+                self.table_handle = table_handle
             
             # add box
             box_pose.p.x = table_pose.p.x + np.random.uniform(-0.1, 0.3)
@@ -306,6 +310,8 @@ class PandaPushEnv(BaseTask):
             "is_success": torch.zeros((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False),
         }
         self.extras["episode"] = {k: None for k in self.episode_sums}
+
+        self.common_step_counter = 0
 
     def _init_default_dof(self):
         desired_x = self.table_position[0] + torch.rand((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False) * 0.4 - 0.1
@@ -504,6 +510,7 @@ class PandaPushEnv(BaseTask):
         if self.viewer is not None:
             self.gym.draw_viewer(self.viewer, self.sim, False)
             self.gym.sync_frame_time(self.sim)
+        self.common_step_counter += 1
         self.post_step()
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
     
@@ -521,6 +528,7 @@ class PandaPushEnv(BaseTask):
             self.extras = {}
         self.extras["time_out"] = self.time_out_buf.clone()
         self.reset_idx(env_ids)
+        self.light_randomization()
         self.compute_observations()
     
     def check_termination(self):
@@ -558,6 +566,13 @@ class PandaPushEnv(BaseTask):
         self.rew_buf = rew
         self.episode_sums["r"] += rew
         self.episode_sums["is_success"] += (distance < self.box_size).float()
+    
+    def light_randomization(self):
+        if self.common_step_counter % 100 == 0:
+            l_color = gymapi.Vec3(np.random.uniform(1, 1), np.random.uniform(1, 1), np.random.uniform(1, 1))
+            l_ambient = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            l_direction = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            self.gym.set_light_parameters(self.sim, 0, l_color, l_ambient, l_direction)
     
     def compute_observations(self):
         self.state_history.append(torch.zeros_like(self.state_history[0]))
