@@ -7,6 +7,7 @@ class BaseConfig(object):
         num_envs: int
         num_observations: int
         num_actions: int
+        num_state_obs: int
         max_episode_length: int
     
     class cam:
