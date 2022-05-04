@@ -8,6 +8,7 @@ from panda_isaac.base_task import BaseTask
 import torch
 from panda_isaac.utils.ik_utils import orientation_error, control_ik, control_osc, control_cartesian_pd
 from collections import deque
+import torchvision
 
 
 class PandaPushEnv(BaseTask):
@@ -135,7 +136,7 @@ class PandaPushEnv(BaseTask):
 
             # add table
             table_handle = self.gym.create_actor(env, table_asset, table_pose, "table", i, 0)
-            color = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            color = gymapi.Vec3(116 / 255, 142 / 256, 138 / 256)
             self.gym.set_rigid_body_color(env, table_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
             if i == 0:
                 self.table_handle = table_handle
@@ -279,6 +280,7 @@ class PandaPushEnv(BaseTask):
             self.image_history = deque(maxlen=self.cfg.obs.history_length)
             for _ in range(self.cfg.obs.history_length):
                 self.image_history.append(torch.zeros((self.num_envs, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size), dtype=torch.float, device=self.device))
+            self.image_transform = torchvision.transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.3)
         self.state_history = deque(maxlen=self.cfg.obs.state_history_length)
         num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
         for _ in range(self.cfg.obs.state_history_length):
@@ -589,9 +591,9 @@ class PandaPushEnv(BaseTask):
             for i in range(self.num_envs):
                 crop_l = (self.cfg.cam.w - self.cfg.obs.im_size) // 2 if self.cfg.cam.crop == "center" else 0
                 crop_r = crop_l + self.cfg.obs.im_size
-                _rgb_obs = self.cam_tensors[i][:, crop_l:crop_r, :3].permute(2, 0, 1).float() / 255.
-                _rgb_obs = ((_rgb_obs - self.im_mean) / self.im_std).flatten()
                 # TODO: apply random shift
+                _rgb_obs = self.image_transform.forward(self.cam_tensors[i][:, crop_l:crop_r, :3].permute(2, 0, 1).float() / 255.)
+                _rgb_obs = ((_rgb_obs - self.im_mean) / self.im_std).flatten()
                 self.image_history[-1][i, :] = _rgb_obs
                 # self.obs_buf[i, :3 * self.cfg.obs.im_size ** 2] = _rgb_obs
             for i in range(len(self.image_history)):
