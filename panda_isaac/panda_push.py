@@ -592,13 +592,17 @@ class PandaPushEnv(BaseTask):
                 crop_l = (self.cfg.cam.w - self.cfg.obs.im_size) // 2 if self.cfg.cam.crop == "center" else 0
                 crop_r = crop_l + self.cfg.obs.im_size
                 # TODO: apply random shift
-                _rgb_obs = self.image_transform.forward(self.cam_tensors[i][:, crop_l:crop_r, :3].permute(2, 0, 1).float() / 255.)
-                _rgb_obs = ((_rgb_obs - self.im_mean) / self.im_std).flatten()
+                _rgb_obs = self.cam_tensors[i][:, crop_l:crop_r, :3].permute(2, 0, 1).float() / 255.
+                # _rgb_obs = ((_rgb_obs - self.im_mean) / self.im_std).flatten()
+                _rgb_obs = _rgb_obs.flatten()
                 self.image_history[-1][i, :] = _rgb_obs
                 # self.obs_buf[i, :3 * self.cfg.obs.im_size ** 2] = _rgb_obs
             for i in range(len(self.image_history)):
+                _image = ((self.image_transform(self.image_history[i].reshape(
+                    (self.num_envs, 3, self.cfg.obs.im_size, self.cfg.obs.im_size)
+                )) - self.im_mean.unsqueeze(dim=0)) / self.im_std.unsqueeze(dim=0)).reshape((self.num_envs, -1))
                 self.obs_buf[:, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * i: 
-                                3 * self.cfg.obs.im_size * self.cfg.obs.im_size * (i + 1)] = self.image_history[i]
+                                3 * self.cfg.obs.im_size * self.cfg.obs.im_size * (i + 1)] = _image
             self.gym.end_access_image_tensors(self.sim)
             start_idx = 3 * self.cfg.obs.im_size ** 2 * len(self.image_history)
             state_start_idx = 0
