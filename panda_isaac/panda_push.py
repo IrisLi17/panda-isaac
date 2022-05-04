@@ -278,9 +278,9 @@ class PandaPushEnv(BaseTask):
         if self.cfg.obs.type == "pixel":
             self.image_history = deque(maxlen=self.cfg.obs.history_length)
             for _ in range(self.cfg.obs.history_length):
-                self.image_history.append(torch.zeros((self.num_envs, 3 * 224 * 224), dtype=torch.float, device=self.device))
+                self.image_history.append(torch.zeros((self.num_envs, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size), dtype=torch.float, device=self.device))
         self.state_history = deque(maxlen=self.cfg.obs.state_history_length)
-        num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * 224 * 224 * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
+        num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
         for _ in range(self.cfg.obs.state_history_length):
             self.state_history.append(torch.zeros((self.num_envs, num_state), dtype=torch.float, device=self.device))
         
@@ -569,8 +569,11 @@ class PandaPushEnv(BaseTask):
     
     def light_randomization(self):
         if self.common_step_counter % 1 == 0:
+            # weaker randomization
             l_color = gymapi.Vec3(np.random.uniform(1, 1), np.random.uniform(1, 1), np.random.uniform(1, 1))
-            l_ambient = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            # l_ambient = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            _ambient = np.random.uniform(0, 1)
+            l_ambient = gymapi.Vec3(_ambient, _ambient, _ambient)
             l_direction = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
             self.gym.set_light_parameters(self.sim, 0, l_color, l_ambient, l_direction)
     
@@ -588,10 +591,12 @@ class PandaPushEnv(BaseTask):
                 crop_r = crop_l + self.cfg.obs.im_size
                 _rgb_obs = self.cam_tensors[i][:, crop_l:crop_r, :3].permute(2, 0, 1).float() / 255.
                 _rgb_obs = ((_rgb_obs - self.im_mean) / self.im_std).flatten()
+                # TODO: apply random shift
                 self.image_history[-1][i, :] = _rgb_obs
                 # self.obs_buf[i, :3 * self.cfg.obs.im_size ** 2] = _rgb_obs
             for i in range(len(self.image_history)):
-                self.obs_buf[:, 3 * 224 * 224 * i: 3 * 224 * 224 * (i + 1)] = self.image_history[i]
+                self.obs_buf[:, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * i: 
+                                3 * self.cfg.obs.im_size * self.cfg.obs.im_size * (i + 1)] = self.image_history[i]
             self.gym.end_access_image_tensors(self.sim)
             start_idx = 3 * self.cfg.obs.im_size ** 2 * len(self.image_history)
             state_start_idx = 0
