@@ -13,13 +13,13 @@ class BaseConfig(object):
     class cam:
         view = "ego"
         crop = "center"
-        w = 298
+        w = 398
         h = 224
-        fov = 120
-        # fov = 86
+        # fov = 120
+        fov = 86
         ss = 2
-        loc_p = [0.04, 0.0, 0.045]
-        loc_r = [180, -90.0, 0.0]
+        loc_p = [0.11104 - 0.0592106, -0.0156, 0.0595]
+        loc_r = [180, -90.0, 180.0]
 
     class obs:
         type: str
