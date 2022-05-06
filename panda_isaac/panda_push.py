@@ -204,11 +204,18 @@ class PandaPushEnv(BaseTask):
                     )
                 elif self.cfg.cam.view == "third":
                     # add third-person view camera
-                    self.gym.set_camera_location(
-                        cam_handle, env, 
-                        gymapi.Vec3(0.8, 0.0, 0.8), 
-                        gymapi.Vec3(0.3, 0.0, 0.5),
+                    rigid_body_table_ind = self.gym.get_actor_rigid_body_handle(env, table_handle, 0)
+                    local_t = gymapi.Transform()
+                    local_t.p = gymapi.Vec3(0.0, 0.0, 0.9)
+                    local_t.r = gymapi.Quat.from_euler_zyx(np.radians(180.0), np.radians(90.0), 0.0)
+                    self.gym.attach_camera_to_body(
+                        cam_handle, env, rigid_body_table_ind, local_t, gymapi.FOLLOW_TRANSFORM
                     )
+                    # self.gym.set_camera_location(
+                    #     cam_handle, env, 
+                    #     gymapi.Vec3(0.5, 0.0, 1.0), 
+                    #     gymapi.Vec3(0.5, 0.0001, 0.5),
+                    # )
                 else:
                     raise NotImplementedError
                 self.cams.append(cam_handle)
@@ -280,9 +287,10 @@ class PandaPushEnv(BaseTask):
             self.image_history = deque(maxlen=self.cfg.obs.history_length)
             for _ in range(self.cfg.obs.history_length):
                 self.image_history.append(torch.zeros((self.num_envs, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size), dtype=torch.float, device=self.device))
-            self.image_transform = torchvision.transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.3)
+            self.image_transform = torchvision.transforms.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.1)
         self.state_history = deque(maxlen=self.cfg.obs.state_history_length)
-        num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
+        # num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
+        num_state = self.num_state_obs // self.cfg.obs.state_history_length
         for _ in range(self.cfg.obs.state_history_length):
             self.state_history.append(torch.zeros((self.num_envs, num_state), dtype=torch.float, device=self.device))
         
@@ -604,12 +612,13 @@ class PandaPushEnv(BaseTask):
                 self.obs_buf[:, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * i: 
                                 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * (i + 1)] = _image
             self.gym.end_access_image_tensors(self.sim)
+            self.state_history[-1][:, :3] = self.rb_states[self.box_idxs, :3]
             start_idx = 3 * self.cfg.obs.im_size ** 2 * len(self.image_history)
-            state_start_idx = 0
+            state_start_idx = 3
         elif self.cfg.obs.type == "state":
             self.state_history[-1][:, :3] = self.rb_states[self.box_idxs, :3]
             start_idx = 0
-            state_start_idx = 3
+            state_start_idx = 0
         else:
             raise NotImplementedError
         # Low dimensional states
@@ -619,24 +628,15 @@ class PandaPushEnv(BaseTask):
             hand_rot, hand_pos,
             self.local_grasp_rot, self.local_grasp_pos
         )
-        self.state_history[-1][:, state_start_idx:] = torch.cat([
+        self.state_history[-1][:, 3:] = torch.cat([
             tcp_pos, tcp_rot, self.dof_pos[:, 7:9, 0], self.target_eef_pos_obs, self.box_goals
         ], dim=-1)
-        state_dim = self.state_history[0].shape[-1]
+        state_dim = self.num_state_obs // self.cfg.obs.state_history_length - state_start_idx
         for i in range(len(self.state_history)):
-            self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i]
+            self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i][:, state_start_idx:]
     
     def get_state_obs(self):
-        hand_rot = self.rb_states[self.hand_idxs, 3:7]
-        hand_pos = self.rb_states[self.hand_idxs, :3]
-        tcp_rot, tcp_pos = tf_combine(
-            hand_rot, hand_pos,
-            self.local_grasp_rot, self.local_grasp_pos
-        )
-        return torch.cat([
-            self.rb_states[self.box_idxs, :3], tcp_pos, tcp_rot, self.dof_pos[:, 7:9, 0], 
-            self.target_eef_pos_obs, self.box_goals
-        ], dim=-1)
+        return torch.cat([self.state_history[i] for i in range(len(self.state_history))], dim=-1)
     
     def set_goal_in_air_ratio(self, goal_in_air):
         self.goal_in_air = goal_in_air

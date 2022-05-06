@@ -11,9 +11,13 @@ class TestConfig(BaseConfig):
         seed = 42
         num_envs = 1
         num_observations = 1 * 3 * 224 * 224 + 15
+        num_state_obs = 18
         # num_observations = 3 + 15
         num_actions = 4
         max_episode_length = 100
+    
+    class cam(BaseConfig.cam):
+        view = "ego"
     
     class obs(BaseConfig.obs):
         # type = "state"
@@ -95,7 +99,7 @@ class ManualController():
         elif self.phase == 2:
             action[:, :3] = 0
             action[:, 3] = -1.0
-            if torch.all(self.env.dof_pos[0, 7:9, 0] < 0.0251):
+            if torch.all(self.env.dof_pos[0, 7:9, 0] < 0.028):
                 self.phase = 3
         elif self.phase == 3:
             dpos = self.env.box_goals - box_pos
@@ -122,7 +126,7 @@ for i in range(100):
     filename = "tmp/tmp%d.png" % i
     image.save(filename)
     if env.cfg.obs.type == "pixel":
-        obs_image = obs[0, :3 * 224 * 224].reshape((3, 224, 224))
+        obs_image = obs[0, :3 * env.cfg.obs.im_size * env.cfg.obs.im_size].reshape((3, env.cfg.obs.im_size, env.cfg.obs.im_size))
         obs_image = (obs_image * env.im_std + env.im_mean).permute(1, 2, 0) * 255
         obs_image = Image.fromarray(obs_image.cpu().numpy().astype(np.uint8))
         filename = "tmp/tmpobs%d.png" % i
@@ -131,6 +135,7 @@ for i in range(100):
         pass
         # print(obs[0])
     obs, reward, done, info = env.step(action)
+    print(obs[0][-15:])
     # print(reward[0])
     if done[0]:
         print("reset", obs[0])
