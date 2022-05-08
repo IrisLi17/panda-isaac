@@ -42,6 +42,12 @@ class PandaPushEnv(BaseTask):
         asset_options = gymapi.AssetOptions()
         box_asset = self.gym.create_box(self.sim, box_size, box_size, box_size, asset_options)
 
+        # # create goal asset for visualization only
+        # asset_options = gymapi.AssetOptions()
+        # asset_options.density = 0.0
+        # asset_options.fix_base_link = True
+        # goal_asset = self.gym.create_sphere(self.sim, 0.025, asset_options)
+
         # load franka asset
         franka_asset_file = "urdf/franka_description/robots/franka_panda.urdf"
         asset_options = gymapi.AssetOptions()
@@ -115,12 +121,14 @@ class PandaPushEnv(BaseTask):
         self.table_position = [0.3, 0.0, 0.5 * table_dims.z]
 
         box_pose = gymapi.Transform()
+        # goal_pose = gymapi.Transform()
 
         self.envs = []
         self.box_idxs = []
         self.hand_idxs = []
         init_pos_list = []
         init_rot_list = []
+        # self.goal_idxs = []
         self.cams = []
         self.cam_tensors = []
 
@@ -180,6 +188,12 @@ class PandaPushEnv(BaseTask):
             # get global index of hand in rigid body state tensor
             hand_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_hand", gymapi.DOMAIN_SIM)
             self.hand_idxs.append(hand_idx)
+
+            # goal_handle = self.gym.create_actor(env, goal_asset, goal_pose, "goal", -1, 0)
+            # if i == 0:
+            #     self.goal_handle = goal_handle
+            # goal_idx = self.gym.get_actor_rigid_body_index(env, goal_handle, 0, gymapi.DOMAIN_SIM)
+            # self.goal_idxs.append(goal_idx)
 
             if self.cfg.obs.type == "pixel":
                 # add camera on wrist
@@ -297,6 +311,14 @@ class PandaPushEnv(BaseTask):
         # prepare obs
         self.target_eef_pos_obs = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device, requires_grad=False)
         
+        self.noise_vec = torch.zeros((1, num_state), dtype=torch.float, device=self.device, requires_grad=False)
+        if self.cfg.obs.noise:
+            assert num_state == 18
+            self.noise_vec[:, :3] = 0.01
+            self.noise_vec[:, 3:6] = 1e-3
+            self.noise_vec[:, 6:10] = 0.0
+            self.noise_vec[:, 10:12] = 0.005
+            self.noise_vec[:, 12:18] = 0.0
         # prepare buffers for actions
         self.motor_pos_target = torch.zeros(self.num_envs, self.franka_num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
         self.effort_action = torch.zeros_like(self.motor_pos_target)
@@ -427,6 +449,14 @@ class PandaPushEnv(BaseTask):
         self.box_goals[env_ids, 2] = self.table_dims[2] + self.box_size / 2
         if np.random.uniform() < self.goal_in_air:
             self.box_goals[env_ids, 2] += torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.4
+        # actor_ids_int32 = self.actor_ids_int32[env_ids, self.goal_handle].flatten()
+        # actor_ids_long = actor_ids_int32.long()
+        # self.root_state[actor_ids_long, 0] = self.box_goals[env_ids, 0]
+        # self.root_state[actor_ids_long, 1] = self.box_goals[env_ids, 1]
+        # self.root_state[actor_ids_long, 2] = self.box_goals[env_ids, 2]
+        # self.gym.set_actor_root_state_tensor_indexed(
+        #     self.sim, gymtorch.unwrap_tensor(self.root_state), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32)
+        # )
     
     def _set_dof_position(self, target_dof):
         actor_ids_int32 = self.actor_ids_int32[:, self.franka_handle].flatten().contiguous()
@@ -633,7 +663,7 @@ class PandaPushEnv(BaseTask):
         ], dim=-1)
         state_dim = self.num_state_obs // self.cfg.obs.state_history_length - state_start_idx
         for i in range(len(self.state_history)):
-            self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i][:, state_start_idx:]
+            self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i][:, state_start_idx:] + torch.randn_like(self.noise_vec[:, state_start_idx:]) * self.noise_vec[:, state_start_idx]
     
     def get_state_obs(self):
         return torch.cat([self.state_history[i] for i in range(len(self.state_history))], dim=-1)

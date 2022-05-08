@@ -26,6 +26,7 @@ class BaseConfig(object):
         im_size: int
         history_length: int
         state_history_length: int
+        noise = False
 
     class control:
         decimal: int
