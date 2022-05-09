@@ -10,6 +10,9 @@ class BaseConfig(object):
         num_state_obs: int
         max_episode_length: int
     
+    class asset:
+        robot_urdf = "urdf/franka_description/robots/franka_panda.urdf"
+    
     class cam:
         view = "ego"
         crop = "center"
@@ -53,3 +56,4 @@ class BaseConfig(object):
     
     class reward:
         type: str
+        contact_coef = 0.0

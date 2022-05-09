@@ -49,7 +49,7 @@ class PandaPushEnv(BaseTask):
         # goal_asset = self.gym.create_sphere(self.sim, 0.025, asset_options)
 
         # load franka asset
-        franka_asset_file = "urdf/franka_description/robots/franka_panda.urdf"
+        franka_asset_file = self.cfg.asset.robot_urdf
         asset_options = gymapi.AssetOptions()
         asset_options.armature = 0.01
         asset_options.fix_base_link = True
@@ -126,6 +126,8 @@ class PandaPushEnv(BaseTask):
         self.envs = []
         self.box_idxs = []
         self.hand_idxs = []
+        self.lfinger_idxs = []
+        self.rfinger_idxs = []
         init_pos_list = []
         init_rot_list = []
         # self.goal_idxs = []
@@ -188,6 +190,12 @@ class PandaPushEnv(BaseTask):
             # get global index of hand in rigid body state tensor
             hand_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_hand", gymapi.DOMAIN_SIM)
             self.hand_idxs.append(hand_idx)
+
+            # get global index of left and right fingers in rigid body state tensor
+            lfinger_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_leftfinger", gymapi.DOMAIN_SIM)
+            self.lfinger_idxs.append(lfinger_idx)
+            rfinger_idx = self.gym.find_actor_rigid_body_index(env, franka_handle, "panda_rightfinger", gymapi.DOMAIN_SIM)
+            self.rfinger_idxs.append(rfinger_idx)
 
             # goal_handle = self.gym.create_actor(env, goal_asset, goal_pose, "goal", -1, 0)
             # if i == 0:
@@ -290,6 +298,11 @@ class PandaPushEnv(BaseTask):
         self.dof_states = gymtorch.wrap_tensor(_dof_states)
         self.dof_pos = self.dof_states[:, 0].view(self.num_envs, 9, 1)
         self.dof_vel = self.dof_states[:, 1].view(self.num_envs, 9, 1)
+
+        # get contact force tensor
+        _net_cf = self.gym.acquire_net_contact_force_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
+        self.net_cf = gymtorch.wrap_tensor(_net_cf)
 
         self.local_grasp_pos = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
         self.local_grasp_pos[:, 2] = 0.1034
@@ -543,6 +556,7 @@ class PandaPushEnv(BaseTask):
             self.gym.refresh_jacobian_tensors(self.sim)
             self.gym.refresh_mass_matrix_tensors(self.sim)
 
+        self.gym.refresh_net_contact_force_tensor(self.sim)
         end_error = self.target_eef_pos[0] - self.rb_states[self.hand_idxs, :3][0]
         if self.cfg.obs.type == "pixel" or self.viewer is not None:
             self.gym.step_graphics(self.sim)
@@ -599,7 +613,8 @@ class PandaPushEnv(BaseTask):
             total_distance = distance + 0.1 * tcp2obj
             # rew = torch.clamp(self.last_distance - distance, min=0)
             bonus = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1)
-            rew = torch.clamp(self.last_distance - total_distance, min=0) + bonus.float()
+            finger_contact = torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > 2, self.net_cf[self.rfinger_idxs, 2] > 2)
+            rew = torch.clamp(self.last_distance - total_distance, min=0) + bonus.float() + self.cfg.reward.contact_coef * finger_contact.float()
             self.last_distance = total_distance
         else:
             raise NotImplementedError

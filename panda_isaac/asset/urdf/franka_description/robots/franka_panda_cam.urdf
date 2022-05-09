@@ -240,6 +240,33 @@
     <limit effort="20" lower="0.0" upper="0.04" velocity="0.2"/>
     <mimic joint="panda_finger_joint1"/>
   </joint>
+  <!-- Add mount and camera -->
+  <link name="camera">
+    <visual>
+      <origin xyz="0.0418 0 0.045" rpy="0 1.57079632679 0" />
+      <geometry>
+        <box size="0.026 0.124 0.029" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0418 0 0.045" rpy="0 1.57079632679 0" />
+      <geometry>
+        <box size="0.026 0.124 0.029" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="camera_joint_fixed" type="fixed" >
+    <parent link="panda_hand" />
+    <child link="camera" />
+    <origin rpy="0 0 0" xyz="0 0 0" />
+  </joint>
+
+  <!-- <link name="panda_ee" />
+  <joint name="panda_ee_joint" type="fixed" >
+    <parent link="panda_hand" />
+    <child link="panda_ee" />
+    <origin rpy="0 0 0" xyz="0 0 0.1034" />
+  </joint> -->
 </robot>
 
 
