@@ -1,4 +1,4 @@
-import math
+import math, os
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymtorch
@@ -28,7 +28,7 @@ class PandaPushEnv(BaseTask):
         self._create_envs()
     
     def _create_envs(self):
-        asset_root = "/home/yunfei/projects/isaac_projects/isaacgym/assets"
+        asset_root = os.path.join(os.path.dirname(__file__), "asset")
 
         # create table asset
         table_dims = gymapi.Vec3(0.8, 1.0, 0.4)
