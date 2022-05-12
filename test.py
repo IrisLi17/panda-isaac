@@ -10,19 +10,25 @@ class TestConfig(BaseConfig):
     class env(BaseConfig.env):
         seed = 42
         num_envs = 1
-        num_observations = 1 * 3 * 224 * 224 + 15
+        num_observations = 1 * 3 * 84 * 84 + 15
         num_state_obs = 18
         # num_observations = 3 + 15
         num_actions = 4
         max_episode_length = 100
     
+    class asset(BaseConfig.asset):
+        robot_urdf = "urdf/franka_description/robots/franka_panda_cam.urdf"
+    
     class cam(BaseConfig.cam):
         view = "ego"
+        fov = 86
+        w = 149
+        h = 84
     
     class obs(BaseConfig.obs):
         # type = "state"
         type = "pixel"
-        im_size = 224
+        im_size = 84
         history_length = 1
         state_history_length = 1
     
@@ -121,10 +127,11 @@ for i in range(100):
     # action = 10 * (torch.from_numpy(np.array([[0.4, 0.0, 0.7]])).float().to(env.device).repeat(env.num_envs, 1) - env.rb_states[env.hand_idxs, :3])
     # action = torch.cat([action, torch.zeros(env.num_envs, 1, dtype=torch.float, device=env.device)], dim=-1)
     # print(i, action[0])
-    image = env.get_camera_image()
-    image = Image.fromarray(image.astype(np.uint8))
-    filename = "tmp/tmp%d.png" % i
-    image.save(filename)
+    if hasattr(env, "camera_handle"):
+        image = env.get_camera_image()
+        image = Image.fromarray(image.astype(np.uint8))
+        filename = "tmp/tmp%d.png" % i
+        image.save(filename)
     if env.cfg.obs.type == "pixel":
         obs_image = obs[0, :3 * env.cfg.obs.im_size * env.cfg.obs.im_size].reshape((3, env.cfg.obs.im_size, env.cfg.obs.im_size))
         obs_image = (obs_image * env.im_std + env.im_mean).permute(1, 2, 0) * 255
@@ -134,6 +141,7 @@ for i in range(100):
     else:
         pass
         # print(obs[0])
+    print(i)
     obs, reward, done, info = env.step(action)
     print(obs[0][-15:])
     # print(reward[0])

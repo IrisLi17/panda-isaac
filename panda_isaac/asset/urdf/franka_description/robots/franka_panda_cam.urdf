@@ -243,13 +243,14 @@
   <!-- Add mount and camera -->
   <link name="camera">
     <visual>
-      <origin xyz="0.0418 0 0.045" rpy="0 1.57079632679 0" />
+    <!--x=0.11104 - 0.0592106, z=0.0595 - 0.029 / 2 -->
+      <origin xyz="0.051829 0 0.045" rpy="0 1.57079632679 0" />
       <geometry>
         <box size="0.026 0.124 0.029" />
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0418 0 0.045" rpy="0 1.57079632679 0" />
+      <origin xyz="0.051829 0 0.045" rpy="0 1.57079632679 0" />
       <geometry>
         <box size="0.026 0.124 0.029" />
       </geometry>
