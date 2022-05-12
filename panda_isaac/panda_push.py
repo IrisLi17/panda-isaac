@@ -631,7 +631,7 @@ class PandaPushEnv(BaseTask):
             total_distance = distance + 0.1 * tcp2obj
             # rew = torch.clamp(self.last_distance - distance, min=0)
             bonus = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1)
-            finger_contact = torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > 2, self.net_cf[self.rfinger_idxs, 2] > 2)
+            finger_contact = torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > self.cfg.safety.contact_force_th, self.net_cf[self.rfinger_idxs, 2] > self.cfg.safety.contact_force_th)
             rew = torch.clamp(self.last_distance - total_distance, min=0) + bonus.float() + self.cfg.reward.contact_coef * finger_contact.float()
             self.last_distance = total_distance
         else:
