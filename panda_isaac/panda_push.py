@@ -700,3 +700,6 @@ class PandaPushEnv(BaseTask):
     
     def set_goal_in_air_ratio(self, goal_in_air):
         self.goal_in_air = goal_in_air
+    
+    def set_contact_force_th(self, contact_force_th):
+        self.cfg.safety.contact_force_th = contact_force_th
