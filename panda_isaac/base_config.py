@@ -57,3 +57,7 @@ class BaseConfig(object):
     class reward:
         type: str
         contact_coef = 0.0
+    
+    class safety:
+        brake_on_contact = False
+        contact_force_th = 1

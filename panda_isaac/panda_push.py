@@ -148,6 +148,12 @@ class PandaPushEnv(BaseTask):
             table_handle = self.gym.create_actor(env, table_asset, table_pose, "table", i, 0)
             color = gymapi.Vec3(116 / 255, 142 / 256, 138 / 256)
             self.gym.set_rigid_body_color(env, table_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
+            # table_rs_props = self.gym.get_actor_rigid_shape_properties(env, table_handle)
+            # if i == 0:
+            #     print(len(table_rs_props))
+            #     print(table_rs_props[0].compliance, table_rs_props[0].filter, table_rs_props[0].friction, 
+            #           table_rs_props[0].restitution, table_rs_props[0].rolling_friction, 
+            #           table_rs_props[0].thickness, table_rs_props[0].torsion_friction)
             if i == 0:
                 self.table_handle = table_handle
             
@@ -348,6 +354,9 @@ class PandaPushEnv(BaseTask):
 
         self.last_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False)
 
+        # safety
+        self.is_brake = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
+        
         # prepare buffers for episode info
         self.episode_sums = {
             "r": torch.zeros((self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False),
@@ -397,6 +406,7 @@ class PandaPushEnv(BaseTask):
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
         self._resample_goals(env_ids)
+        self.is_brake[env_ids] = 0
         self.episode_length_buf[env_ids] = 0
         for k in self.episode_sums:
             self.episode_sums[k][env_ids] = 0
@@ -493,6 +503,11 @@ class PandaPushEnv(BaseTask):
             self.rb_states[self.hand_idxs, 3:7], eef_target,
             self.local_grasp_rot, self.local_grasp_pos
         )
+        if self.cfg.safety.brake_on_contact:
+            self.is_brake = torch.logical_or(
+                self.is_brake, torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > self.cfg.safety.contact_force_th, 
+                                                self.net_cf[self.rfinger_idxs, 2] > self.cfg.safety.contact_force_th)
+            )
         # TODO: do safe clip, find out where is "hand"
         # eef_target[:, 0] = torch.clamp(eef_target[:, 0], min=self.table_position[0] - 0.15, max=self.table_position[0] + 0.35)
         # eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
@@ -541,6 +556,9 @@ class PandaPushEnv(BaseTask):
                     ee_vel_desired, ee_rvel_desired, self.kp, self.kd
                 )
             self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * gripper_action.repeat((1, 2))
+            # Brake
+            self.motor_pos_target[self.is_brake] = self.dof_pos[self.is_brake, :, 0]
+
             # print(self.dof_pos[0, :, 0])
             self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(self.motor_pos_target))
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.effort_action))
