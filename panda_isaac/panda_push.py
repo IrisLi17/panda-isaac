@@ -503,11 +503,6 @@ class PandaPushEnv(BaseTask):
             self.rb_states[self.hand_idxs, 3:7], eef_target,
             self.local_grasp_rot, self.local_grasp_pos
         )
-        if self.cfg.safety.brake_on_contact:
-            self.is_brake = torch.logical_or(
-                self.is_brake, torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > self.cfg.safety.contact_force_th, 
-                                                self.net_cf[self.rfinger_idxs, 2] > self.cfg.safety.contact_force_th)
-            )
         # TODO: do safe clip, find out where is "hand"
         # eef_target[:, 0] = torch.clamp(eef_target[:, 0], min=self.table_position[0] - 0.15, max=self.table_position[0] + 0.35)
         # eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
@@ -556,9 +551,7 @@ class PandaPushEnv(BaseTask):
                     ee_vel_desired, ee_rvel_desired, self.kp, self.kd
                 )
             self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * gripper_action.repeat((1, 2))
-            # Brake
-            self.motor_pos_target[self.is_brake] = self.dof_pos[self.is_brake, :, 0]
-
+            
             # print(self.dof_pos[0, :, 0])
             self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(self.motor_pos_target))
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.effort_action))
@@ -611,6 +604,10 @@ class PandaPushEnv(BaseTask):
         # self.reset_buf = torch.norm(hand_pos - hand_goal, dim=-1) < self.box_size
         self.time_out_buf = self.episode_length_buf >= self.max_episode_length
         self.reset_buf |= self.time_out_buf
+        if self.cfg.safety.brake_on_contact:
+            self.is_brake = torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > self.cfg.safety.contact_force_th, 
+                                             self.net_cf[self.rfinger_idxs, 2] > self.cfg.safety.contact_force_th)
+            self.reset_buf |= self.is_brake
     
     def compute_reward(self):
         box_pos = self.rb_states[self.box_idxs, :3]
@@ -631,7 +628,7 @@ class PandaPushEnv(BaseTask):
             total_distance = distance + 0.1 * tcp2obj
             # rew = torch.clamp(self.last_distance - distance, min=0)
             bonus = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1)
-            finger_contact = torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > self.cfg.safety.contact_force_th, self.net_cf[self.rfinger_idxs, 2] > self.cfg.safety.contact_force_th)
+            finger_contact = self.is_brake
             rew = torch.clamp(self.last_distance - total_distance, min=0) + bonus.float() + self.cfg.reward.contact_coef * finger_contact.float()
             self.last_distance = total_distance
         else:
