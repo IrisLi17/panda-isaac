@@ -148,12 +148,14 @@ class PandaPushEnv(BaseTask):
             table_handle = self.gym.create_actor(env, table_asset, table_pose, "table", i, 0)
             color = gymapi.Vec3(116 / 255, 142 / 256, 138 / 256)
             self.gym.set_rigid_body_color(env, table_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
-            # table_rs_props = self.gym.get_actor_rigid_shape_properties(env, table_handle)
+            table_rs_props = self.gym.get_actor_rigid_shape_properties(env, table_handle)
             # if i == 0:
             #     print(len(table_rs_props))
             #     print(table_rs_props[0].compliance, table_rs_props[0].filter, table_rs_props[0].friction, 
             #           table_rs_props[0].restitution, table_rs_props[0].rolling_friction, 
             #           table_rs_props[0].thickness, table_rs_props[0].torsion_friction)
+            table_rs_props[0].friction = np.random.uniform(*self.cfg.domain_randomization.friction_range)
+            self.gym.set_actor_rigid_shape_properties(env, table_handle, table_rs_props)
             if i == 0:
                 self.table_handle = table_handle
             
@@ -163,6 +165,9 @@ class PandaPushEnv(BaseTask):
             box_pose.p.z = table_dims.z + 0.5 * box_size
             box_pose.r = gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 0, 1), np.random.uniform(-math.pi, math.pi))
             box_handle = self.gym.create_actor(env, box_asset, box_pose, "box", i, 0)
+            box_rs_props = self.gym.get_actor_rigid_shape_properties(env, box_handle)
+            box_rs_props[0].friction = np.random.uniform(*self.cfg.domain_randomization.friction_range)
+            self.gym.set_actor_rigid_shape_properties(env, box_handle, box_rs_props)
             if i == 0:
                 self.box_handle = box_handle
                 self.box_position = [box_pose.p.x, box_pose.p.y, box_pose.p.z]

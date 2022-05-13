@@ -61,3 +61,6 @@ class BaseConfig(object):
     class safety:
         brake_on_contact = False
         contact_force_th = 1
+    
+    class domain_randomization:
+        friction_range = [1.0, 1.0]
