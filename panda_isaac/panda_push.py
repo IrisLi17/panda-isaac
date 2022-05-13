@@ -20,7 +20,7 @@ class PandaPushEnv(BaseTask):
         # for image observation
         self.im_mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float, device=self.device).view(3, 1, 1)
         self.im_std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float, device=self.device).view(3, 1, 1)
-        self.goal_in_air = 0.0
+        self.goal_in_air = self.cfg.env.init_goal_in_air
 
     def create_sim(self):
         self.up_axis_idx = 2 # 2 for z, 1 for y -> adapt gravity accordingly

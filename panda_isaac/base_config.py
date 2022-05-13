@@ -9,6 +9,7 @@ class BaseConfig(object):
         num_actions: int
         num_state_obs: int
         max_episode_length: int
+        init_goal_in_air = 0.0
     
     class asset:
         robot_urdf = "urdf/franka_description/robots/franka_panda.urdf"
