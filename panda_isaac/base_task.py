@@ -98,7 +98,7 @@ class BaseTask():
             camera_properties.width = 320
             camera_properties.height = 320
             camera_handle = self.gym.create_camera_sensor(self.envs[0], camera_properties)
-            self.gym.set_camera_location(camera_handle, self.envs[0], gymapi.Vec3(1.0, 0.5, 1.0), gymapi.Vec3(0.0, 0.0, 0.0))
+            self.gym.set_camera_location(camera_handle, self.envs[0], gymapi.Vec3(1.0, 0.0, 0.5), gymapi.Vec3(0.0, 0.0, 0.5))
             self.camera_handle = camera_handle
 
     def create_sim(self):

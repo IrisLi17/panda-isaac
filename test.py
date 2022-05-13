@@ -48,33 +48,12 @@ class TestConfig(BaseConfig):
     class reward(BaseConfig.reward):
         type = "dense"
 
-
-class TestJointConfig(BaseConfig):
-    class env(BaseConfig.env):
-        seed = 42
-        num_envs = 16
-        # num_observations = 3 + 30
-        num_observations = 1 * 3 * 224 * 224 + 30
-        num_actions = 8
-        max_episode_length = 50
+    class safety(BaseConfig.safety):
+        brake_on_contact = True
+        contact_force_th = 1.0
     
-    class obs(BaseConfig.obs):
-        # type = "state"
-        type = "pixel"
-        im_size = 224
-    
-    class cam(BaseConfig.cam):
-        view = "third"
-        fov = 120
-    
-    class control(BaseConfig.control):
-        decimal = 6
-        controller = "joint"
-        # common_speed = 2.17 * decimal
-    
-    class reward(BaseConfig.reward):
-        type = "sparse"
-
+    class domain_randomization(BaseConfig.domain_randomization):
+        friction_range = [0.5, 3.0]
 
 class ManualController():
     def __init__(self, env):
