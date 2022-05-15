@@ -24,6 +24,7 @@ class BaseConfig(object):
         ss = 2
         loc_p = [0.11104 - 0.0592106, -0.0156, 0.0595]
         loc_r = [180, -90.0, 180.0]
+        loc_shift_range = [-0.003, 0.003]
 
     class obs:
         type: str

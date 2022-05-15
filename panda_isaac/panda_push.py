@@ -229,7 +229,8 @@ class PandaPushEnv(BaseTask):
                     # add camera on wrist
                     rigid_body_hand_ind = self.gym.find_actor_rigid_body_handle(env, franka_handle, "panda_hand")
                     local_t = gymapi.Transform()
-                    local_t.p = gymapi.Vec3(*self.cfg.cam.loc_p)
+                    rand_loc_p = (np.array(self.cfg.cam.loc_p) + np.random.uniform(*self.cfg.cam.loc_shift_range, size=3)).tolist()
+                    local_t.p = gymapi.Vec3(*rand_loc_p)
                     xyz_angle_rad = [np.radians(a) for a in self.cfg.cam.loc_r]
                     local_t.r = gymapi.Quat.from_euler_zyx(*xyz_angle_rad)
                     self.gym.attach_camera_to_body(
@@ -240,8 +241,12 @@ class PandaPushEnv(BaseTask):
                     # add third-person view camera
                     rigid_body_table_ind = self.gym.get_actor_rigid_body_handle(env, table_handle, 0)
                     local_t = gymapi.Transform()
-                    local_t.p = gymapi.Vec3(0.0, 0.0, 0.9)
-                    local_t.r = gymapi.Quat.from_euler_zyx(np.radians(180.0), np.radians(90.0), 0.0)
+                    # local_t.p = gymapi.Vec3(0.0, 0.0, 0.9)
+                    # local_t.r = gymapi.Quat.from_euler_zyx(np.radians(180.0), np.radians(90.0), 0.0)
+                    # local_t.p = gymapi.Vec3(-0.3, -0.15, 0.27)
+                    # local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(0.0), np.radians(0.0))
+                    local_t.p = gymapi.Vec3(0.5, 0.0, 0.9)
+                    local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(60.0), np.radians(180.0))
                     self.gym.attach_camera_to_body(
                         cam_handle, env, rigid_body_table_ind, local_t, gymapi.FOLLOW_TRANSFORM
                     )
