@@ -14,8 +14,7 @@ def control_ik(dpose, j_eef, damping):
     # solve damped least squares
     j_eef_T = torch.transpose(j_eef, 1, 2)
     lmbda = torch.eye(6, device=dpose.device) * (damping ** 2)
-    u = (j_eef_T @ torch.inverse(j_eef @ j_eef_T + lmbda) @ dpose).view(num_envs, 7)
-    return u
+    return (j_eef_T @ torch.inverse(j_eef @ j_eef_T + lmbda) @ dpose).view(num_envs, 7)
 
 def control_osc(dpose, kp, kd, kp_null, kd_null, default_dof_pos_tensor, mm, j_eef, dof_pos, dof_vel, hand_vel):
     mm_inv = torch.inverse(mm)
