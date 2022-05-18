@@ -17,13 +17,15 @@ class TestConfig(BaseConfig):
         max_episode_length = 100
     
     class asset(BaseConfig.asset):
-        robot_urdf = "urdf/franka_description/robots/franka_panda_cam.urdf"
+        robot_urdf = "urdf/franka_description/robots/franka_panda.urdf"
     
     class cam(BaseConfig.cam):
-        view = "ego"
+        # view = "ego"
+        view = "third"
         fov = 86
         w = 149
         h = 84
+        loc_p = [0.11104 - 0.0592106 - 0.01, -0.0156, 0.015]
     
     class obs(BaseConfig.obs):
         # type = "state"
@@ -68,6 +70,7 @@ class ManualController():
     def act(self):
         hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
         box_pos = self.env.rb_states[self.env.box_idxs, :3]
+        # box_pos = torch.tensor([[0.5, 0.5, 0.425]], device=self.device)
         action = torch.zeros((1, 4), dtype=torch.float, device=self.device)
         if self.phase == 0:
             dpos = box_pos + torch.tensor([[0, 0, 0.2034]], dtype=torch.float, device=self.device) - hand_pos
