@@ -49,7 +49,7 @@ class PandaPickEnv(BaseTask):
 			self.sim, table_dims.x, table_dims.y, table_dims.z, asset_options)
 
 		# create box asset
-		self.box_size = box_size = 0.05
+		self.box_size = box_size = 0.04
 		asset_options = gymapi.AssetOptions()
 		asset_options.density = 100
 		asset_options.angular_damping = 100
@@ -437,7 +437,7 @@ class PandaPickEnv(BaseTask):
 		if isinstance(self.kd, torch.Tensor):
 			self.kd = self.kd.to(self.device)
 		# prepare buffers for goal
-		self.box_goals = self.rb_states[self.goal_idxs, :3]
+		# self.box_goals = self.rb_states[self.goal_idxs, :3]
 
 		self.last_distance = torch.zeros(
 			(self.num_envs,), dtype=torch.float, device=self.device, requires_grad=False)
@@ -523,7 +523,7 @@ class PandaPickEnv(BaseTask):
 		self.gym.refresh_dof_state_tensor(self.sim)
 		# Set last distance
 		self.last_distance[env_ids] = torch.norm(
-			self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
+			self.rb_states[self.box_idxs, :3][env_ids] - self.rb_states[self.goal_idxs, :3][env_ids], dim=-1)
 		if self.cfg.reward.type == "dense":
 			hand_rot = self.rb_states[self.hand_idxs, 3:7].view(-1,2,4)[env_ids]
 			hand_pos = self.rb_states[self.hand_idxs, :3].view(-1,2,3)[env_ids]
@@ -727,10 +727,11 @@ class PandaPickEnv(BaseTask):
 
 	def check_termination(self):
 		box_pos = self.rb_states[self.box_idxs, :3]
+		box_goals = self.rb_states[self.goal_idxs, :3]
 		# hand_pos = self.rb_states[self.hand_idxs, :3]
 		# hand_goal = box_pos + torch.tensor([[0.0, 0.0, 0.2]], dtype=torch.float, device=self.device)
 		self.reset_buf = torch.norm(
-			box_pos - self.box_goals, dim=-1) < self.box_size
+			box_pos - box_goals, dim=-1) < self.box_size
 		# self.reset_buf = torch.norm(hand_pos - hand_goal, dim=-1) < self.box_size
 		self.time_out_buf = self.episode_length_buf >= self.max_episode_length
 		self.reset_buf |= self.time_out_buf
@@ -741,7 +742,8 @@ class PandaPickEnv(BaseTask):
 
 	def compute_reward(self):
 		box_pos = self.rb_states[self.box_idxs, :3]
-		distance = torch.norm(box_pos - self.box_goals, dim=-1)
+		box_goals = self.rb_states[self.goal_idxs, :3]
+		distance = torch.norm(box_pos - box_goals, dim=-1)
 		if self.cfg.reward.type == "sparse":
 			rew = torch.logical_and(distance < self.box_size,
 															self.episode_length_buf > 1).float()
@@ -828,7 +830,7 @@ class PandaPickEnv(BaseTask):
 		)
 		robot_obs = torch.cat([
 			tcp_pos, tcp_rot, self.dof_pos[..., 7:9,0], self.target_eef_pos_obs],dim=-1).view(self.num_envs, -1)
-		self.state_history[-1][:, 3:] = torch.cat([robot_obs,self.box_goals], dim=-1)
+		self.state_history[-1][:, 3:] = torch.cat([robot_obs,self.rb_states[self.goal_idxs, :3]], dim=-1)
 		state_dim = self.num_state_obs // self.cfg.obs.state_history_length - state_start_idx
 		for i in range(len(self.state_history)):
 			self.obs_buf[:, start_idx + i * state_dim: start_idx + (i + 1) * state_dim] = self.state_history[i][:, state_start_idx:] + torch.randn_like(
