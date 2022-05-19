@@ -245,8 +245,8 @@ class PandaPushEnv(BaseTask):
                     # local_t.r = gymapi.Quat.from_euler_zyx(np.radians(180.0), np.radians(90.0), 0.0)
                     # local_t.p = gymapi.Vec3(-0.3, -0.15, 0.27)
                     # local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(0.0), np.radians(0.0))
-                    local_t.p = gymapi.Vec3(0.5, 0.0, 0.9)
-                    local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(60.0), np.radians(180.0))
+                    local_t.p = gymapi.Vec3(0.6, 0.0, 0.5)
+                    local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(30.0), np.radians(180.0))
                     self.gym.attach_camera_to_body(
                         cam_handle, env, rigid_body_table_ind, local_t, gymapi.FOLLOW_TRANSFORM
                     )
@@ -437,6 +437,10 @@ class PandaPushEnv(BaseTask):
         self.gym.refresh_mass_matrix_tensors(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
+        _, self.target_eef_pos_obs[env_ids] = tf_combine(
+            self.rb_states[self.hand_idxs, 3:7][env_ids], self.rb_states[self.hand_idxs, :3][env_ids],
+            self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
+        )
         # Set last distance
         self.last_distance[env_ids] = torch.norm(self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
         if self.cfg.reward.type == "dense":

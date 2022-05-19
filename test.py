@@ -7,97 +7,94 @@ import numpy as np
 
 
 class TestConfig(BaseConfig):
-  class env(BaseConfig.env):
-    seed = 42
-    num_envs = 1
-    num_observations = 1 * 3 * 84 * 84 + 15
-    num_state_obs = 18
-    # num_observations = 3 + 15
-    num_actions = 4
-    max_episode_length = 100
+    class env(BaseConfig.env):
+        seed = 42
+        num_envs = 1
+        num_observations = 1 * 3 * 84 * 84 + 15
+        num_state_obs = 18
+        # num_observations = 3 + 15
+        num_actions = 4
+        max_episode_length = 100
+    
+    class asset(BaseConfig.asset):
+        robot_urdf = "urdf/franka_description/robots/franka_panda.urdf"
+    
+    class cam(BaseConfig.cam):
+        # view = "ego"
+        view = "third"
+        fov = 86
+        w = 149
+        h = 84
+        loc_p = [0.11104 - 0.0592106 - 0.01, -0.0156, 0.015]
+    
+    class obs(BaseConfig.obs):
+        # type = "state"
+        type = "pixel"
+        im_size = 84
+        history_length = 1
+        state_history_length = 1
+    
+    class control(BaseConfig.control):
+        decimal = 6
+        controller = "ik"
+        # controller = "cartesian_impedance"
+        # controller = "osc"
+        damping = 0.05
+        kp_translation = 300 # 0-400
+        kp_rotation = 10  # 0-30
+        kd_translation = 2.0 * np.sqrt(kp_translation)
+        kd_rotation = 2.0 * np.sqrt(kp_rotation)
+        kp_null = 0.5
+        kd_null = 2.0 * np.sqrt(kp_null)
+    
+    class reward(BaseConfig.reward):
+        type = "dense"
 
-  class asset(BaseConfig.asset):
-    robot_urdf = "urdf/franka_description/robots/franka_panda_cam.urdf"
-
-  class cam(BaseConfig.cam):
-    view = "ego"
-    fov = 86
-    w = 149
-    h = 84
-
-  class obs(BaseConfig.obs):
-    # type = "state"
-    type = "pixel"
-    im_size = 84
-    history_length = 1
-    state_history_length = 1
-
-  class control(BaseConfig.control):
-    decimal = 6
-    controller = "ik"
-    # controller = "cartesian_impedance"
-    # controller = "osc"
-    damping = 0.05
-    kp_translation = 300  # 0-400
-    kp_rotation = 10  # 0-30
-    kd_translation = 2.0 * np.sqrt(kp_translation)
-    kd_rotation = 2.0 * np.sqrt(kp_rotation)
-    kp_null = 0.5
-    kd_null = 2.0 * np.sqrt(kp_null)
-
-  class reward(BaseConfig.reward):
-    type = "dense"
-
-  class safety(BaseConfig.safety):
-    brake_on_contact = True
-    contact_force_th = 1.0
-
-  class domain_randomization(BaseConfig.domain_randomization):
-    friction_range = [0.5, 3.0]
-
+    class safety(BaseConfig.safety):
+        brake_on_contact = True
+        contact_force_th = 1.0
+    
+    class domain_randomization(BaseConfig.domain_randomization):
+        friction_range = [0.5, 3.0]
 
 class ManualController():
-  def __init__(self, env):
-    self.env = env
-    assert self.env.num_envs == 1
-    self.phase = 0
-    self.device = env.device
-
-  def reset(self):
-    self.phase = 0
-
-  def act(self):
-    hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
-    box_pos = self.env.rb_states[self.env.box_idxs, :3]
-    action = torch.zeros((1, 4), dtype=torch.float, device=self.device)
-    if self.phase == 0:
-      dpos = box_pos + \
-        torch.tensor([[0, 0, 0.2034]], dtype=torch.float,
-                     device=self.device) - hand_pos
-      action[:, :3] = 20 * dpos
-      action[:, 3] = 1.0
-      if torch.norm(dpos) < 1e-2:
-        self.phase = 1
-    elif self.phase == 1:
-      dpos = box_pos + \
-        torch.tensor([0, 0, 0.1034], dtype=torch.float,
-                     device=self.device) - hand_pos
-      action[:, :3] = 20 * dpos
-      action[:, 3] = 1.0
-      if torch.norm(dpos) < 1.5e-2:
-        self.phase = 2
-    elif self.phase == 2:
-      action[:, :3] = 0
-      action[:, 3] = -1.0
-      if torch.all(self.env.dof_pos[0, 7:9, 0] < 0.028):
-        self.phase = 3
-    elif self.phase == 3:
-      dpos = self.env.box_goals - box_pos
-      action[:, :3] = 20 * dpos
-      action[:, 2] = 0.5
-      action[:, 3] = -1.0
-    return action
-
+    def __init__(self, env):
+        self.env = env
+        assert self.env.num_envs == 1
+        self.phase = 0
+        self.device = env.device
+    
+    def reset(self):
+        self.phase = 0
+    
+    def act(self):
+        hand_pos = self.env.rb_states[self.env.hand_idxs, :3]
+        box_pos = self.env.rb_states[self.env.box_idxs, :3]
+        # box_pos = torch.tensor([[0.5, 0.5, 0.425]], device=self.device)
+        action = torch.zeros((1, 4), dtype=torch.float, device=self.device)
+        if self.phase == 0:
+            dpos = box_pos + torch.tensor([[0, 0, 0.2034]], dtype=torch.float, device=self.device) - hand_pos
+            action[:, :3] = 20 * dpos
+            action[:, 3] = 1.0
+            if torch.norm(dpos) < 1e-2:
+                self.phase = 1
+        elif self.phase == 1:
+            dpos = box_pos + torch.tensor([0, 0, 0.1034], dtype=torch.float, device=self.device) - hand_pos
+            action[:, :3] = 20 * dpos
+            action[:, 3] = 1.0
+            if torch.norm(dpos) < 1.5e-2:
+                self.phase = 2
+        elif self.phase == 2:
+            action[:, :3] = 0
+            action[:, 3] = -1.0
+            if torch.all(self.env.dof_pos[0, 7:9, 0] < 0.028):
+                self.phase = 3
+        elif self.phase == 3:
+            dpos = self.env.box_goals - box_pos
+            action[:, :3] = 20 * dpos
+            action[:, 2] = 0.5
+            action[:, 3] = -1.0
+        return action
 
 # cfg = TestJointConfig()
 cfg = TestConfig()
