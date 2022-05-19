@@ -437,6 +437,10 @@ class PandaPushEnv(BaseTask):
         self.gym.refresh_mass_matrix_tensors(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
+        _, self.target_eef_pos_obs[env_ids] = tf_combine(
+            self.rb_states[self.hand_idxs, 3:7][env_ids], self.rb_states[self.hand_idxs, :3][env_ids],
+            self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
+        )
         # Set last distance
         self.last_distance[env_ids] = torch.norm(self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
         if self.cfg.reward.type == "dense":
