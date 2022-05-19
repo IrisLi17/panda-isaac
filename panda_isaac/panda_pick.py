@@ -1,6 +1,5 @@
 import math
 import os
-from unicodedata import decimal
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymtorch
@@ -154,6 +153,7 @@ class PandaPickEnv(BaseTask):
 		goal_pose = gymapi.Transform()
 
 		self.envs = []
+		self.franka_handle = []
 		self.box_idxs = []
 		self.goal_idxs = []
 		self.box_idxs = []
@@ -230,7 +230,6 @@ class PandaPickEnv(BaseTask):
 			self.goal_idxs.append(goal_idx)
 
 			# add franka
-			self.franka_handle = []
 			for j in range(2):
 				franka_handle = self.gym.create_actor(
 					env, franka_asset, franka_pose[j], "franka", i, 2)
@@ -471,7 +470,7 @@ class PandaPickEnv(BaseTask):
 				self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
 			dpose = torch.cat([pos_error, rot_error], dim=-1).unsqueeze(dim=-1)
 			dof_pos = self.dof_pos.squeeze(-1)[..., :7] + \
-				control_ik(dpose, self.j_eef, 0.05)
+				control_ik(dpose, self.j_eef, 0.05).view(self.num_envs, 2, 7)
 			self.dof_pos[..., :7, 0] = dof_pos
 			self.motor_pos_target[..., :7] = dof_pos
 			self.effort_action[:] = 0
@@ -538,7 +537,7 @@ class PandaPickEnv(BaseTask):
 
 	def _reset_dofs(self, env_ids):
 		# Important! should feed actor id, not env id
-		actor_ids_int32 = self.actor_ids_int32[env_ids,
+		actor_ids_int32 = self.actor_ids_int32[env_ids][:,
 																					 self.franka_handle].flatten()
 		self.dof_pos[env_ids, ..., 0] = self.default_dof_pos_tensor[env_ids]
 
