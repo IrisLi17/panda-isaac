@@ -532,7 +532,8 @@ class PandaPickEnv(BaseTask):
 				self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
 			)
 			tcp2obj = torch.norm(
-				tcp_pos - self.rb_states[self.box_idxs, :3][env_ids], dim=-1).mean(dim=-1)
+				(tcp_pos - self.rb_states[self.box_idxs, :3][env_ids].unsqueeze(dim=1)), 
+			dim=-1).mean(dim=-1)
 			self.last_distance[env_ids] += 0.1 * tcp2obj
 
 	def _reset_dofs(self, env_ids):
@@ -753,7 +754,7 @@ class PandaPickEnv(BaseTask):
 				hand_rot, hand_pos,
 				self.local_grasp_rot, self.local_grasp_pos
 			)
-			tcp2obj = torch.norm(tcp_pos - box_pos, dim=-1).mean(dim=-1)
+			tcp2obj = torch.norm(tcp_pos - box_pos.unsqueeze(dim=1), dim=-1).mean(dim=-1)
 			total_distance = distance + 0.1 * tcp2obj
 			# rew = torch.clamp(self.last_distance - distance, min=0)
 			bonus = torch.logical_and(
