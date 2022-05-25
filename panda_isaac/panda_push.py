@@ -118,8 +118,8 @@ class PandaPushEnv(BaseTask):
         franka_pose.p = gymapi.Vec3(0, 0, 0.4)
 
         table_pose = gymapi.Transform()
-        table_pose.p = gymapi.Vec3(0.3, 0.0, 0.5 * table_dims.z)
-        self.table_position = [0.3, 0.0, 0.5 * table_dims.z]
+        table_pose.p = gymapi.Vec3(0.4, 0.0, 0.5 * table_dims.z)
+        self.table_position = [0.4, 0.0, 0.5 * table_dims.z]
 
         box_pose = gymapi.Transform()
         # goal_pose = gymapi.Transform()
@@ -148,7 +148,7 @@ class PandaPushEnv(BaseTask):
 
             # add table
             table_pose = gymapi.Transform()
-            table_pose.p = gymapi.Vec3(0.3, 0.0, 0.5 * table_dims.z + np.random.uniform(low=0, high=0.2))
+            table_pose.p = gymapi.Vec3(0.4, 0.0, 0.5 * table_dims.z + np.random.uniform(low=0, high=0.1))
             table_handle = self.gym.create_actor(env, table_asset, table_pose, "table", i, 0)
             color = gymapi.Vec3(116 / 255, 142 / 256, 138 / 256)
             self.gym.set_rigid_body_color(env, table_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
