@@ -2,7 +2,7 @@ import math, os
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymtorch
-from isaacgym.torch_utils import to_torch, tf_combine, tensor_clamp
+from isaacgym.torch_utils import to_torch, tf_combine, tensor_clamp, quat_mul
 from panda_isaac.base_config import BaseConfig
 from panda_isaac.base_task import BaseTask
 import torch
@@ -127,6 +127,7 @@ class PandaPushEnv(BaseTask):
         self.envs = []
         self.box_idxs = []
         self.hand_idxs = []
+        self.table_idxs = []
         self.lfinger_idxs = []
         self.rfinger_idxs = []
         init_pos_list = []
@@ -146,6 +147,8 @@ class PandaPushEnv(BaseTask):
             self.envs.append(env)
 
             # add table
+            table_pose = gymapi.Transform()
+            table_pose.p = gymapi.Vec3(0.3, 0.0, 0.5 * table_dims.z + np.random.uniform(low=0, high=0.2))
             table_handle = self.gym.create_actor(env, table_asset, table_pose, "table", i, 0)
             color = gymapi.Vec3(116 / 255, 142 / 256, 138 / 256)
             self.gym.set_rigid_body_color(env, table_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
@@ -159,7 +162,9 @@ class PandaPushEnv(BaseTask):
             # self.gym.set_actor_rigid_shape_properties(env, table_handle, table_rs_props)
             if i == 0:
                 self.table_handle = table_handle
-            
+            table_idx = self.gym.get_actor_rigid_body_index(env, table_handle, 0, gymapi.DOMAIN_SIM)
+            self.table_idxs.append(table_idx)
+
             # add box
             box_pose.p.x = table_pose.p.x + np.random.uniform(-0.1, 0.3)
             box_pose.p.y = table_pose.p.y + np.random.uniform(-0.3, 0.3)
@@ -239,16 +244,20 @@ class PandaPushEnv(BaseTask):
                     )
                 elif self.cfg.cam.view == "third":
                     # add third-person view camera
-                    rigid_body_table_ind = self.gym.get_actor_rigid_body_handle(env, table_handle, 0)
+                    # rigid_body_table_ind = self.gym.get_actor_rigid_body_handle(env, table_handle, 0)
+                    rigid_body_base_handle = self.gym.find_actor_rigid_body_handle(env, franka_handle, "panda_link0")
                     local_t = gymapi.Transform()
                     # local_t.p = gymapi.Vec3(0.0, 0.0, 0.9)
                     # local_t.r = gymapi.Quat.from_euler_zyx(np.radians(180.0), np.radians(90.0), 0.0)
                     # local_t.p = gymapi.Vec3(-0.3, -0.15, 0.27)
                     # local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(0.0), np.radians(0.0))
-                    local_t.p = gymapi.Vec3(0.6, 0.0, 0.5)
-                    local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(30.0), np.radians(180.0))
+                    local_t.p = gymapi.Vec3(0.04103317769547119, -0.35906402567417345, 0.03798478970447923)
+                    temp = quat_mul(torch.tensor([-0.6378096241359468, 0.24259494405992, -0.2693273647306896, 0.6795655576052603]), torch.tensor([0.5, -0.5, 0.5, 0.5]))
+                    local_t.r = gymapi.Quat(temp[0], temp[1], temp[2], temp[3])
+                    # local_t.r = gymapi.Quat(0.5, -0.5, 0.5, 0.5)
+                    
                     self.gym.attach_camera_to_body(
-                        cam_handle, env, rigid_body_table_ind, local_t, gymapi.FOLLOW_TRANSFORM
+                        cam_handle, env, rigid_body_base_handle, local_t, gymapi.FOLLOW_TRANSFORM
                     )
                     # self.gym.set_camera_location(
                     #     cam_handle, env, 
@@ -331,7 +340,9 @@ class PandaPushEnv(BaseTask):
             self.image_history = deque(maxlen=self.cfg.obs.history_length)
             for _ in range(self.cfg.obs.history_length):
                 self.image_history.append(torch.zeros((self.num_envs, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size), dtype=torch.float, device=self.device))
+            # TODO: move it to training part
             self.image_transform = torchvision.transforms.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.1)
+            # self.image_transform = lambda x: x
         self.state_history = deque(maxlen=self.cfg.obs.state_history_length)
         # num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
         num_state = self.num_state_obs // self.cfg.obs.state_history_length
@@ -470,12 +481,14 @@ class PandaPushEnv(BaseTask):
             self.sim, gymtorch.unwrap_tensor(self.effort_action), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32))
 
     def _reset_root_states(self, env_ids):
+        actor_ids_int32 = self.actor_ids_int32[env_ids, self.table_handle].flatten()
+        table_ids_long = actor_ids_int32.long()
         # Randomize box position
         actor_ids_int32 = self.actor_ids_int32[env_ids, self.box_handle].flatten()
         actor_ids_long = actor_ids_int32.long()
         self.root_state[actor_ids_long, 0] = self.table_position[0] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
         self.root_state[actor_ids_long, 1] = self.table_position[1] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
-        self.root_state[actor_ids_long, 2] = self.box_position[2]
+        self.root_state[actor_ids_long, 2] = self.box_position[2] + (self.root_state[table_ids_long, 2] - self.table_position[2])
         self.root_state[actor_ids_long, 7:13] = 0
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.root_state), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32)
@@ -484,7 +497,9 @@ class PandaPushEnv(BaseTask):
     def _resample_goals(self, env_ids):
         self.box_goals[env_ids, 0] = self.table_position[0] + torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
         self.box_goals[env_ids, 1] = self.table_position[1] + torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
-        self.box_goals[env_ids, 2] = self.table_dims[2] + self.box_size / 2
+        box_ids_int32 = self.actor_ids_int32[env_ids, self.box_handle].flatten()
+        box_ids_long = box_ids_int32.long()
+        self.box_goals[env_ids, 2] = self.root_state[box_ids_long, 2]
         if np.random.uniform() < self.goal_in_air:
             self.box_goals[env_ids, 2] += torch.rand(size=env_ids.shape, dtype=torch.float, device=self.device) * 0.4
         # actor_ids_int32 = self.actor_ids_int32[env_ids, self.goal_handle].flatten()
@@ -661,9 +676,13 @@ class PandaPushEnv(BaseTask):
             # weaker randomization
             l_color = gymapi.Vec3(np.random.uniform(1, 1), np.random.uniform(1, 1), np.random.uniform(1, 1))
             # l_ambient = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
-            _ambient = np.random.uniform(0, 1)
+            # TODO
+            # _ambient = np.random.uniform(0, 1)
+            _ambient = 0.5
             l_ambient = gymapi.Vec3(_ambient, _ambient, _ambient)
-            l_direction = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            # TODO: make it more reasonable
+            # l_direction = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            l_direction = gymapi.Vec3(0, 0, 0)
             self.gym.set_light_parameters(self.sim, 0, l_color, l_ambient, l_direction)
     
     def compute_observations(self):
