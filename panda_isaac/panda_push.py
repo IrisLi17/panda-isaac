@@ -30,6 +30,19 @@ class PandaPushEnv(BaseTask):
     def _create_envs(self):
         asset_root = os.path.join(os.path.dirname(__file__), "asset")
 
+        # create floor mat
+        floor_dims = gymapi.Vec3(0.2, 0.2, 0.01)
+        asset_options = gymapi.AssetOptions()
+        asset_options.fix_base_link = True
+        floormat_asset = self.gym.create_box(self.sim, floor_dims.x, floor_dims.y, floor_dims.z, asset_options)
+        # floormat_tex_dim = 512
+        # noise_texture = 255.0 * np.random.rand(floormat_tex_dim, floormat_tex_dim*4)
+        # floormat_texture = self.gym.create_texture_from_buffer(self.sim, floormat_tex_dim, floormat_tex_dim, noise_texture.astype(np.uint8))
+        # floormat_texture = self.gym.create_texture_from_file(self.sim, os.path.join("../isaacgym/assets/textures/", "texture_stone_stone_texture_0.jpg"))
+        # if floormat_texture == gymapi.INVALID_HANDLE:
+        #     print("Couldn't load texture %s")
+        #     exit()
+
         # create table asset
         table_dims = gymapi.Vec3(0.8, 1.0, 0.4)
         self.table_dims = [0.8, 1.0, 0.4]
@@ -146,6 +159,13 @@ class PandaPushEnv(BaseTask):
             env = self.gym.create_env(self.sim, env_lower, env_upper, num_per_row)
             self.envs.append(env)
 
+            # add floormat
+            # floormat_pose = gymapi.Transform()
+            # floormat_pose.p = gymapi.Vec3(0.4, 0.0, 0.5 * floor_dims.z * 100)
+            # floormat_handle = self.gym.create_actor(env, floormat_asset, floormat_pose, "floormat", i, 0)
+            # self.gym.set_rigid_body_texture(env, floormat_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, floormat_texture)
+            # color = gymapi.Vec3(1, 1, 1)
+            # self.gym.set_rigid_body_color(env, floormat_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
             # add table
             table_pose = gymapi.Transform()
             table_pose.p = gymapi.Vec3(0.4, 0.0, 0.5 * table_dims.z + np.random.uniform(low=0, high=0.1))
@@ -169,7 +189,8 @@ class PandaPushEnv(BaseTask):
             box_pose.p.x = table_pose.p.x + np.random.uniform(-0.1, 0.3)
             box_pose.p.y = table_pose.p.y + np.random.uniform(-0.3, 0.3)
             box_pose.p.z = table_dims.z + 0.5 * box_size + 0.001
-            box_pose.r = gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 0, 1), np.random.uniform(-math.pi, math.pi))
+            # box_pose.r = gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 0, 1), np.random.uniform(-math.pi, math.pi))
+            box_pose.r = gymapi.Quat(0., 0., 0., 1.0)
             box_handle = self.gym.create_actor(env, box_asset, box_pose, "box", i, 0)
             box_rs_props = self.gym.get_actor_rigid_shape_properties(env, box_handle)
             box_rs_props[0].friction = np.random.uniform(*self.cfg.domain_randomization.friction_range)
@@ -252,6 +273,8 @@ class PandaPushEnv(BaseTask):
                     # local_t.p = gymapi.Vec3(-0.3, -0.15, 0.27)
                     # local_t.r = gymapi.Quat.from_euler_zyx(np.radians(0.0), np.radians(0.0), np.radians(0.0))
                     local_t.p = gymapi.Vec3(0.04103317769547119, -0.35906402567417345, 0.03798478970447923)
+                    cam2color = gymapi.Quat(-0.6378096241359468, 0.24259494405992, -0.2693273647306896, 0.6795655576052603).rotate(gymapi.Vec3(-0.000316, -0.0592196, 0))
+                    local_t.p += cam2color
                     temp = quat_mul(torch.tensor([-0.6378096241359468, 0.24259494405992, -0.2693273647306896, 0.6795655576052603]), torch.tensor([0.5, -0.5, 0.5, 0.5]))
                     local_t.r = gymapi.Quat(temp[0], temp[1], temp[2], temp[3])
                     # local_t.r = gymapi.Quat(0.5, -0.5, 0.5, 0.5)
@@ -399,6 +422,7 @@ class PandaPushEnv(BaseTask):
             rot_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
             dpose = torch.cat([pos_error, rot_error], dim=-1).unsqueeze(dim=-1)
             dof_pos = self.dof_pos.squeeze(-1)[:, :7] + control_ik(dpose, self.j_eef, 0.05)
+            # dof_pos = torch.tensor([1.93467669e-04,  -7.85086990e-01,   9.74551613e-05, -2.35732843e+00,  -7.84990887e-04,   1.56941207e+00, 7.85425904e-01], device=self.device, dtype=torch.float)
             self.dof_pos[: ,:7, 0] = dof_pos
             self.motor_pos_target[:, :7] = dof_pos
             self.effort_action[:] = 0
@@ -489,6 +513,9 @@ class PandaPushEnv(BaseTask):
         self.root_state[actor_ids_long, 0] = self.table_position[0] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.4 - 0.1
         self.root_state[actor_ids_long, 1] = self.table_position[1] + torch.rand(size=actor_ids_int32.shape, dtype=torch.float, device=self.device) * 0.6 - 0.3
         self.root_state[actor_ids_long, 2] = self.box_position[2] + (self.root_state[table_ids_long, 2] - self.table_position[2])
+        # self.root_state[actor_ids_long, 0] = 0.41086194
+        # self.root_state[actor_ids_long, 1] = 0.00400653
+        # self.root_state[actor_ids_long, 2] = 0.425
         self.root_state[actor_ids_long, 7:13] = 0
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.root_state), gymtorch.unwrap_tensor(actor_ids_int32), len(actor_ids_int32)
@@ -527,6 +554,7 @@ class PandaPushEnv(BaseTask):
             pos_action = torch.clamp(actions[:, :3], -1.0, 1.0)
             gripper_action = torch.clamp(actions[:, 3:], -1.0, 1.0)
         eef_target = self.rb_states[self.hand_idxs, :3] + 0.05 * pos_action
+        eef_target[actions[:, -1].abs() > 0.5] = self.rb_states[self.hand_idxs, :3][actions[:, -1].abs() > 0.5]
         filtered_pos_target = self.rb_states[self.hand_idxs, :3]
 
         _, self.target_eef_pos_obs = tf_combine(
@@ -582,6 +610,10 @@ class PandaPushEnv(BaseTask):
                 )
             # Clip
             target_finger_pos = 0.02 + 0.02 * gripper_action.repeat((1, 2))
+            target_finger_pos[actions[:, -1].abs() < 0.5] = self.dof_pos[:, 7:9, 0][actions[:, -1].abs() < 0.5]
+            target_finger_pos[
+                torch.logical_and(actions[:, -1].abs() < 0.5, torch.logical_and(
+                    self.net_cf[self.lfinger_idxs, 1] < -1, self.net_cf[self.rfinger_idxs, 1] > 1))] -= 0.01
             self.motor_pos_target[:, 7:9] = self.dof_pos[:, 7:9, 0] + torch.clamp(target_finger_pos - self.dof_pos[:, 7:9, 0], min=-0.005, max=0.005)
             # self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * gripper_action.repeat((1, 2))
             

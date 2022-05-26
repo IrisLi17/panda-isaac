@@ -22,10 +22,10 @@ class TestConfig(BaseConfig):
     class cam(BaseConfig.cam):
         # view = "ego"
         view = "third"
-        fov = 86
+        fov = 88 # 90
         w = 149
         h = 84
-        loc_p = [0.11104 - 0.0592106 - 0.01, -0.0156, 0.015]
+        # loc_p = [0.11104 - 0.0592106 - 0.01, -0.0156, 0.015]
     
     class obs(BaseConfig.obs):
         # type = "state"
@@ -75,25 +75,32 @@ class ManualController():
         if self.phase == 0:
             dpos = box_pos + torch.tensor([[0, 0, 0.2034]], dtype=torch.float, device=self.device) - hand_pos
             action[:, :3] = 20 * dpos
-            action[:, 3] = 1.0
+            action[:, 3] = 0.0
             if torch.norm(dpos) < 1e-2:
                 self.phase = 1
         elif self.phase == 1:
             dpos = box_pos + torch.tensor([0, 0, 0.1034], dtype=torch.float, device=self.device) - hand_pos
             action[:, :3] = 20 * dpos
-            action[:, 3] = 1.0
-            if torch.norm(dpos) < 1.5e-2:
+            action[:, 3] = 0.0
+            if torch.norm(dpos) < 1e-2:
                 self.phase = 2
         elif self.phase == 2:
             action[:, :3] = 0
             action[:, 3] = -1.0
-            if torch.all(self.env.dof_pos[0, 7:9, 0] < 0.028):
+            print(torch.sum(self.env.dof_pos[0, 7:9, 0], dim=-1))
+            if torch.all(torch.sum(self.env.dof_pos[0, 7:9, 0], dim=-1) < 0.05):
                 self.phase = 3
         elif self.phase == 3:
             dpos = self.env.box_goals - box_pos
-            action[:, :3] = 20 * dpos
+            # action[:, :3] = 20 * dpos
+            action[:, :2] = 0
             action[:, 2] = 0.5
-            action[:, 3] = -1.0
+            action[:, 3] = 0.0
+            if torch.all(hand_pos[:, 2] > 0.7):
+                self.phase = 4
+        elif self.phase == 4:
+            action[:, :3] = 0
+            action[:, 3] = 1.0
         return action
 
 # cfg = TestJointConfig()
@@ -102,7 +109,7 @@ env = PandaPushEnv(cfg, headless=True)
 controller = ManualController(env)
 obs = env.reset()
 controller.reset()
-for i in range(100):
+for i in range(200):
     action = 2 * torch.rand(size=(env.num_envs, env.num_actions), dtype=torch.float, device=env.device) - 1
     action = controller.act()
     # action = 20 * (env.rb_states[env.box_idxs, :3] + torch.tensor([[0., 0., 0.15]], device=env.device) - env.rb_states[env.hand_idxs, :3])
@@ -125,7 +132,7 @@ for i in range(100):
         # print(obs[0])
     print(i)
     obs, reward, done, info = env.step(action)
-    print(obs[0][-15:])
+    print(obs[0][-18:])
     # print(reward[0])
     if done[0]:
         print("reset", obs[0])
