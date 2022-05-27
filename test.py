@@ -20,8 +20,8 @@ class TestConfig(BaseConfig):
         robot_urdf = "urdf/franka_description/robots/franka_panda.urdf"
     
     class cam(BaseConfig.cam):
-        # view = "ego"
-        view = "third"
+        view = "ego"
+        # view = "third"
         fov = 88 # 90
         w = 149
         h = 84
@@ -55,7 +55,7 @@ class TestConfig(BaseConfig):
         contact_force_th = 1.0
     
     class domain_randomization(BaseConfig.domain_randomization):
-        friction_range = [0.5, 3.0]
+        friction_range = [1.0, 2.0]
 
 class ManualController():
     def __init__(self, env):
@@ -88,7 +88,7 @@ class ManualController():
             action[:, :3] = 0
             action[:, 3] = -1.0
             print(torch.sum(self.env.dof_pos[0, 7:9, 0], dim=-1))
-            if torch.all(torch.sum(self.env.dof_pos[0, 7:9, 0], dim=-1) < 0.05):
+            if torch.all(torch.sum(self.env.dof_pos[0, 7:9, 0], dim=-1) < 0.0505):
                 self.phase = 3
         elif self.phase == 3:
             dpos = self.env.box_goals - box_pos

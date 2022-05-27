@@ -97,8 +97,9 @@ class BaseTask():
             camera_properties = gymapi.CameraProperties()
             camera_properties.width = 320
             camera_properties.height = 320
-            camera_handle = self.gym.create_camera_sensor(self.envs[0], camera_properties)
-            self.gym.set_camera_location(camera_handle, self.envs[0], gymapi.Vec3(1.0, 0.0, 0.5), gymapi.Vec3(0.0, 0.0, 0.5))
+            self.cam_env_id = 0
+            camera_handle = self.gym.create_camera_sensor(self.envs[self.cam_env_id], camera_properties)
+            self.gym.set_camera_location(camera_handle, self.envs[self.cam_env_id], gymapi.Vec3(1.0, 0.0, 0.7), gymapi.Vec3(0.5, 0.0, 0.5))
             self.camera_handle = camera_handle
 
     def create_sim(self):
@@ -151,7 +152,7 @@ class BaseTask():
         self.gym.step_graphics(self.sim)
         self.gym.render_all_camera_sensors(self.sim)
         # self.gym.write_camera_image_to_file(self.sim, self.envs[0], self.camera_handle, gymapi.IMAGE_COLOR, "test.png")
-        image = self.gym.get_camera_image(self.sim, self.envs[0], self.camera_handle, gymapi.IMAGE_COLOR)
+        image = self.gym.get_camera_image(self.sim, self.envs[self.cam_env_id], self.camera_handle, gymapi.IMAGE_COLOR)
         image = image.reshape((image.shape[0], -1, 4))
         return image
     
