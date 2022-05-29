@@ -97,7 +97,7 @@ class PandaPushEnv(BaseTask):
             franka_dof_props["damping"][:7].fill(0.0)
         # grippers
         franka_dof_props["driveMode"][7:].fill(gymapi.DOF_MODE_POS)
-        franka_dof_props["stiffness"][7:].fill(80000.0)
+        franka_dof_props["stiffness"][7:].fill(8000.0)
         franka_dof_props["damping"][7:].fill(40.0)
 
         # default dof states and position targets
@@ -457,7 +457,7 @@ class PandaPushEnv(BaseTask):
             self.gym.refresh_rigid_body_state_tensor(self.sim)
             self.gym.refresh_dof_state_tensor(self.sim)
         self.default_dof_pos_tensor[:, :7] = self.dof_pos[:, :7, 0]
-        self.default_dof_pos_tensor[:, 7] = torch.rand_like(self.default_dof_pos_tensor[:, 7]) * 0.04
+        self.default_dof_pos_tensor[:, 7] = 0.04
         self.default_dof_pos_tensor[:, 8] = self.default_dof_pos_tensor[:, 7]
         self._default_dof_initialized = True
     
@@ -590,8 +590,8 @@ class PandaPushEnv(BaseTask):
         self.target_eef_pos[:] = eef_target
         self.target_finger[:] = gripper_action
         initial_error = eef_target[0] - self.rb_states[self.hand_idxs, :3][0]
-        cur_finger_joint = torch.clone(self.dof_pos[:, 7:9, 0])
         for i in range(self.cfg.control.decimal):
+            cur_finger_width = torch.sum(self.dof_pos[:, 7:9, 0], dim=-1, keepdim=True)
             filtered_pos_target = self.cfg.control.filter_param * eef_target + (1 - self.cfg.control.filter_param) * filtered_pos_target
             pos_error = filtered_pos_target - self.rb_states[self.hand_idxs, :3]
             orn_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
@@ -633,11 +633,12 @@ class PandaPushEnv(BaseTask):
                 )
             # Clip
             target_finger_pos = 0.02 + 0.02 * gripper_action.repeat((1, 2))
-            target_finger_pos[actions[:, -1].abs() < 0.5] = cur_finger_joint[actions[:, -1].abs() < 0.5]
+            target_finger_pos[actions[:, -1].abs() < 0.5] = cur_finger_width[actions[:, -1].abs() < 0.5].repeat((1, 2)) / 2
             target_finger_pos[
                 torch.logical_and(actions[:, -1].abs() < 0.5, torch.logical_and(
                     self.net_cf[self.lfinger_idxs, 1] < -1, self.net_cf[self.rfinger_idxs, 1] > 1))] -= 0.01
-            self.motor_pos_target[:, 7:9] = cur_finger_joint + torch.clamp(target_finger_pos - cur_finger_joint, min=-0.005, max=0.005)
+            self.motor_pos_target[:, 7:9] = cur_finger_width.repeat(1, 2) / 2 + torch.clamp(target_finger_pos - cur_finger_width.repeat(1, 2) / 2, min=-0.01, max=0.01)
+            # self.motor_pos_target[:, 7:9] = target_finger_pos
             # self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * gripper_action.repeat((1, 2))
             
             # print(self.dof_pos[0, :, 0])
