@@ -575,7 +575,7 @@ class PandaPushEnv(BaseTask):
             gripper_action = torch.where(action_type == 1, torch.clamp(actions[:, 4:5], -1.0, 1.0), self.target_finger)
         elif actions.shape[1] == 4:
             pos_action = torch.clamp(actions[:, :3], -1.0, 1.0)
-            gripper_action = torch.where(actions[:, 3] == 0, self.target_finger, 0.02 + 0.02 * torch.clamp(actions[:, 3:], -1.0, 1.0).repeat(1, 2))
+            gripper_action = torch.where(actions[:, 3:] == 0, self.target_finger, 0.02 + 0.02 * torch.clamp(actions[:, 3:], -1.0, 1.0).repeat(1, 2))
         eef_target = self.rb_states[self.hand_idxs, :3] + 0.05 * pos_action
         eef_target[actions[:, -1].abs() > 0.5] = self.rb_states[self.hand_idxs, :3][actions[:, -1].abs() > 0.5]
         filtered_pos_target = self.rb_states[self.hand_idxs, :3]
