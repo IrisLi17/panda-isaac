@@ -97,7 +97,7 @@ class PandaPushEnv(BaseTask):
             franka_dof_props["damping"][:7].fill(0.0)
         # grippers
         franka_dof_props["driveMode"][7:].fill(gymapi.DOF_MODE_POS)
-        franka_dof_props["stiffness"][7:].fill(8000.0)
+        franka_dof_props["stiffness"][7:].fill(1e6)
         franka_dof_props["damping"][7:].fill(40.0)
 
         # default dof states and position targets
@@ -380,8 +380,8 @@ class PandaPushEnv(BaseTask):
             for _ in range(self.cfg.obs.history_length):
                 self.image_history.append(torch.zeros((self.num_envs, 3 * self.cfg.obs.im_size * self.cfg.obs.im_size), dtype=torch.float, device=self.device))
             # TODO: move it to training part
-            self.image_transform = torchvision.transforms.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.1)
-            # self.image_transform = lambda x: x
+            # self.image_transform = torchvision.transforms.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.1)
+            self.image_transform = lambda x: x
         self.state_history = deque(maxlen=self.cfg.obs.state_history_length)
         # num_state = self.num_obs // self.cfg.obs.state_history_length if self.cfg.obs.type == "state" else (self.num_obs - 3 * self.cfg.obs.im_size * self.cfg.obs.im_size * self.cfg.obs.history_length) // self.cfg.obs.state_history_length
         num_state = self.num_state_obs // self.cfg.obs.state_history_length
@@ -405,7 +405,7 @@ class PandaPushEnv(BaseTask):
         self.last_torques = torch.zeros(self.num_envs, 7, dtype=torch.float, device=self.device)
         self.target_eef_orn = torch.tensor([[1.0, 0., 0., 0.]], dtype=torch.float, device=self.device, requires_grad=False).repeat((self.num_envs, 1))
         self.target_eef_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device, requires_grad=False)
-        self.target_finger = torch.ones((self.num_envs, 1), dtype=torch.float, device=self.device, requires_grad=False)
+        self.target_finger = torch.ones((self.num_envs, 2), dtype=torch.float, device=self.device, requires_grad=False)
         if isinstance(self.kp, torch.Tensor):
             self.kp = self.kp.to(self.device)
         if isinstance(self.kd, torch.Tensor):
@@ -457,7 +457,7 @@ class PandaPushEnv(BaseTask):
             self.gym.refresh_rigid_body_state_tensor(self.sim)
             self.gym.refresh_dof_state_tensor(self.sim)
         self.default_dof_pos_tensor[:, :7] = self.dof_pos[:, :7, 0]
-        self.default_dof_pos_tensor[:, 7] = 0.04
+        self.default_dof_pos_tensor[:, 7] = 0.04 * torch.rand_like(self.default_dof_pos_tensor[:, 7])
         self.default_dof_pos_tensor[:, 8] = self.default_dof_pos_tensor[:, 7]
         self._default_dof_initialized = True
     
@@ -494,6 +494,7 @@ class PandaPushEnv(BaseTask):
             self.rb_states[self.hand_idxs, 3:7][env_ids], self.rb_states[self.hand_idxs, :3][env_ids],
             self.local_grasp_rot[env_ids], self.local_grasp_pos[env_ids]
         )
+        self.target_finger = self.dof_pos[:, 7:9, 0]
         # Set last distance
         self.last_distance[env_ids] = torch.norm(self.rb_states[self.box_idxs, :3][env_ids] - self.box_goals[env_ids], dim=-1)
         if self.cfg.reward.type == "dense":
@@ -574,7 +575,7 @@ class PandaPushEnv(BaseTask):
             gripper_action = torch.where(action_type == 1, torch.clamp(actions[:, 4:5], -1.0, 1.0), self.target_finger)
         elif actions.shape[1] == 4:
             pos_action = torch.clamp(actions[:, :3], -1.0, 1.0)
-            gripper_action = torch.clamp(actions[:, 3:], -1.0, 1.0)
+            gripper_action = torch.where(actions[:, 3] == 0, self.target_finger, 0.02 + 0.02 * torch.clamp(actions[:, 3:], -1.0, 1.0).repeat(1, 2))
         eef_target = self.rb_states[self.hand_idxs, :3] + 0.05 * pos_action
         eef_target[actions[:, -1].abs() > 0.5] = self.rb_states[self.hand_idxs, :3][actions[:, -1].abs() > 0.5]
         filtered_pos_target = self.rb_states[self.hand_idxs, :3]
@@ -588,10 +589,10 @@ class PandaPushEnv(BaseTask):
         # eef_target[:, 1] = torch.clamp(eef_target[:, 1], min=self.table_position[1] - 0.35, max=self.table_position[1] + 0.35)
         # eef_target[:, 2] = torch.clamp(eef_target[:, 2], min=0.51)
         self.target_eef_pos[:] = eef_target
-        self.target_finger[:] = gripper_action
+        self.target_finger = torch.clone(gripper_action)
         initial_error = eef_target[0] - self.rb_states[self.hand_idxs, :3][0]
+        # cur_finger_width = torch.sum(self.dof_pos[:, 7:9, 0], dim=-1, keepdim=True)
         for i in range(self.cfg.control.decimal):
-            cur_finger_width = torch.sum(self.dof_pos[:, 7:9, 0], dim=-1, keepdim=True)
             filtered_pos_target = self.cfg.control.filter_param * eef_target + (1 - self.cfg.control.filter_param) * filtered_pos_target
             pos_error = filtered_pos_target - self.rb_states[self.hand_idxs, :3]
             orn_error = orientation_error(self.target_eef_orn, self.rb_states[self.hand_idxs, 3:7])
@@ -632,13 +633,14 @@ class PandaPushEnv(BaseTask):
                     ee_vel_desired, ee_rvel_desired, self.kp, self.kd
                 )
             # Clip
-            target_finger_pos = 0.02 + 0.02 * gripper_action.repeat((1, 2))
-            target_finger_pos[actions[:, -1].abs() < 0.5] = cur_finger_width[actions[:, -1].abs() < 0.5].repeat((1, 2)) / 2
-            target_finger_pos[
-                torch.logical_and(actions[:, -1].abs() < 0.5, torch.logical_and(
-                    self.net_cf[self.lfinger_idxs, 1] < -1, self.net_cf[self.rfinger_idxs, 1] > 1))] -= 0.01
-            self.motor_pos_target[:, 7:9] = cur_finger_width.repeat(1, 2) / 2 + torch.clamp(target_finger_pos - cur_finger_width.repeat(1, 2) / 2, min=-0.01, max=0.01)
-            # self.motor_pos_target[:, 7:9] = target_finger_pos
+            # target_finger_pos = 0.02 + 0.02 * gripper_action.repeat((1, 2))
+            # target_finger_pos[actions[:, -1].abs() < 0.5] = cur_finger_width[actions[:, -1].abs() < 0.5].repeat((1, 2)) / 2
+            # target_finger_pos[
+            #     torch.logical_and(actions[:, -1].abs() < 0.5, torch.logical_and(
+            #         self.net_cf[self.lfinger_idxs, 1] < -1, self.net_cf[self.rfinger_idxs, 1] > 1))] -= 0.001
+            # print("target finger", self.target_finger, "gripper action", gripper_action)
+            # self.motor_pos_target[:, 7:9] = cur_finger_width.repeat(1, 2) / 2 + torch.clamp(target_finger_pos - cur_finger_width.repeat(1, 2) / 2, min=-0.06, max=0.06)
+            self.motor_pos_target[:, 7:9] = self.target_finger[:]
             # self.motor_pos_target[:, 7:9] = 0.02 + 0.02 * gripper_action.repeat((1, 2))
             
             # print(self.dof_pos[0, :, 0])
@@ -719,6 +721,8 @@ class PandaPushEnv(BaseTask):
             bonus = torch.logical_and(distance < self.box_size, self.episode_length_buf > 1)
             finger_contact = torch.logical_or(self.net_cf[self.lfinger_idxs, 2] > self.cfg.safety.contact_force_th, 
                                               self.net_cf[self.rfinger_idxs, 2] > self.cfg.safety.contact_force_th)
+            # finger_contact |= torch.logical_or(self.net_cf[self.lfinger_idxs, 0] > self.cfg.safety.contact_force_th,
+            #                                    self.net_cf[self.rfinger_idxs, 0] > self.cfg.safety.contact_force_th)
             rew = torch.clamp(self.last_distance - total_distance, min=0) + bonus.float() + self.cfg.reward.contact_coef * finger_contact.float()
             self.last_distance = total_distance
         else:
