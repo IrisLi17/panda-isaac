@@ -732,17 +732,21 @@ class PandaPushEnv(BaseTask):
         self.episode_sums["is_success"] += (distance < self.box_size).float()
     
     def light_randomization(self):
-        if self.common_step_counter % 1 == 0:
+        if self.common_step_counter % self.cfg.domain_randomization.rand_light_interval == 0:
             # weaker randomization
             l_color = gymapi.Vec3(np.random.uniform(1, 1), np.random.uniform(1, 1), np.random.uniform(1, 1))
             # l_ambient = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
             # TODO
-            # _ambient = np.random.uniform(0, 1)
-            _ambient = 0.5
+            if self.cfg.domain_randomization.rand_light_ambient:
+                _ambient = np.random.uniform(0, 1)
+            else:
+                _ambient = 0.5
             l_ambient = gymapi.Vec3(_ambient, _ambient, _ambient)
             # TODO: make it more reasonable
-            # l_direction = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
-            l_direction = gymapi.Vec3(0, 0, 0)
+            if self.cfg.domain_randomization.rand_light_dir:
+                l_direction = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            else:
+                l_direction = gymapi.Vec3(0, 0, 0)
             self.gym.set_light_parameters(self.sim, 0, l_color, l_ambient, l_direction)
     
     def compute_observations(self):

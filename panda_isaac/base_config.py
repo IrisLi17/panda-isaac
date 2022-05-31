@@ -66,3 +66,6 @@ class BaseConfig(object):
     
     class domain_randomization:
         friction_range = [1.0, 1.0]
+        rand_light_interval = 1
+        rand_light_dir = False
+        rand_light_ambient = False
