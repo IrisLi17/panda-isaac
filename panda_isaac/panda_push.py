@@ -791,7 +791,7 @@ class PandaPushEnv(BaseTask):
         ], dim=-1)
         state_dim = self.num_state_obs // self.cfg.obs.state_history_length - state_start_idx
         for i in range(len(self.state_history)):
-            self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i][:, state_start_idx:] + torch.randn_like(self.noise_vec[:, state_start_idx:]) * self.noise_vec[:, state_start_idx]
+            self.obs_buf[:, start_idx + i * state_dim : start_idx + (i + 1) * state_dim] = self.state_history[i][:, state_start_idx:] + torch.randn_like(self.noise_vec[:, state_start_idx:]) * self.noise_vec[:, state_start_idx:]
     
     def get_state_obs(self):
         return torch.cat([self.state_history[i] for i in range(len(self.state_history))], dim=-1)
